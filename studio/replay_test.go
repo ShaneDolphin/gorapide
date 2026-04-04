@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // makeEvents builds a slice of RecordedEvents with the supplied offsets.

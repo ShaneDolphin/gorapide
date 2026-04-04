@@ -3,9 +3,9 @@ package studio
 import (
 	"fmt"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/arch"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/arch"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 // Reconstruct converts an ArchitectureSchema into a live arch.Architecture.

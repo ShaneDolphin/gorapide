@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/constraint"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/constraint"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 // --- CheckAfter: constraints checked on Stop ---

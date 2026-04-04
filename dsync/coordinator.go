@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // CoordOption configures a Coordinator.

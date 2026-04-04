@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // Compile-time interface checks for timing patterns.

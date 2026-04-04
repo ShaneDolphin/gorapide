@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // Checkable is the common interface for both pattern-based and predicate-based

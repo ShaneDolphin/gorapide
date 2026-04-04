@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // --- During Pattern ---

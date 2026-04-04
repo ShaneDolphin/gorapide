@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 // TestArchitectureBind verifies that Bind registers a binding and Bindings()

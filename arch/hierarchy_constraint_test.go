@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide/constraint"
+	"github.com/ShaneDolphin/gorapide/constraint"
 )
 
 func TestHierarchicalConstraintCheck(t *testing.T) {

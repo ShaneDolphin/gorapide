@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // EventTranslation defines how a single source action maps to a target action.

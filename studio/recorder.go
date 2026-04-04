@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // RecordedEvent is a single captured event with timing metadata.

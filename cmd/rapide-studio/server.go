@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/beautiful-majestic-dolphin/gorapide/arch"
-	"github.com/beautiful-majestic-dolphin/gorapide/studio"
+	"github.com/ShaneDolphin/gorapide/arch"
+	"github.com/ShaneDolphin/gorapide/studio"
 )
 
 // Session holds all server state for the rapide-studio application.

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 // --- Checker interface ---

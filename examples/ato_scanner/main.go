@@ -21,10 +21,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/arch"
-	"github.com/beautiful-majestic-dolphin/gorapide/constraint"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/arch"
+	"github.com/ShaneDolphin/gorapide/constraint"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 func main() {

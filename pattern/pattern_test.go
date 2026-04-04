@@ -3,7 +3,7 @@ package pattern
 import (
 	"testing"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // Compile-time check that BasicPattern implements Pattern.

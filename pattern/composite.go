@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // mergeEventSets returns the union of two EventSets, deduplicating by EventID.

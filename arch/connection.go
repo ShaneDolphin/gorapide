@@ -3,8 +3,8 @@ package arch
 import (
 	"fmt"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 // ConnectionKind distinguishes the three Rapide connection semantics.

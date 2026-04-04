@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // ActionKind distinguishes incoming vs outgoing actions on an interface.

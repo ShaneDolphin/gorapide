@@ -1,3 +1,3 @@
-module github.com/beautiful-majestic-dolphin/gorapide
+module github.com/ShaneDolphin/gorapide
 
 go 1.22
