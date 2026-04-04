@@ -17,6 +17,7 @@ type Architecture struct {
 	Name        string
 	components  map[string]*Component
 	connections []*Connection
+	bindings    *BindingManager
 	poset       *gorapide.Poset
 	onEvent     []func(*gorapide.Event)
 	events      chan *gorapide.Event // router notification channel
@@ -55,6 +56,7 @@ func NewArchitecture(name string, opts ...ArchOption) *Architecture {
 	a := &Architecture{
 		Name:       name,
 		components: make(map[string]*Component),
+		bindings:   NewBindingManager(),
 		events:     make(chan *gorapide.Event, 1024),
 	}
 	for _, opt := range opts {
@@ -124,6 +126,53 @@ func (a *Architecture) Components() []*Component {
 // Poset returns the architecture's shared poset for inspection.
 func (a *Architecture) Poset() *gorapide.Poset {
 	return a.poset
+}
+
+// Bind creates a dynamic binding from one component to another.
+// Both components must already be registered in the architecture.
+func (a *Architecture) Bind(from, to string) error {
+	a.mu.RLock()
+	_, fromOK := a.components[from]
+	_, toOK := a.components[to]
+	a.mu.RUnlock()
+	if !fromOK {
+		return fmt.Errorf("arch: source component %q not found", from)
+	}
+	if !toOK {
+		return fmt.Errorf("arch: target component %q not found", to)
+	}
+	return a.bindings.Bind(from, to)
+}
+
+// Unbind removes all bindings originating from the given component.
+func (a *Architecture) Unbind(from string) error {
+	return a.bindings.Unbind(from)
+}
+
+// BindWith creates a binding with options and returns the binding ID.
+// Both components must already be registered in the architecture.
+func (a *Architecture) BindWith(from, to string, opts ...BindingOption) (string, error) {
+	a.mu.RLock()
+	_, fromOK := a.components[from]
+	_, toOK := a.components[to]
+	a.mu.RUnlock()
+	if !fromOK {
+		return "", fmt.Errorf("arch: source component %q not found", from)
+	}
+	if !toOK {
+		return "", fmt.Errorf("arch: target component %q not found", to)
+	}
+	return a.bindings.BindWith(from, to, opts...)
+}
+
+// UnbindByID removes a specific binding by ID.
+func (a *Architecture) UnbindByID(id string) error {
+	return a.bindings.UnbindByID(id)
+}
+
+// Bindings returns all active bindings.
+func (a *Architecture) Bindings() []*Binding {
+	return a.bindings.ActiveBindings()
 }
 
 // WithConstraints configures constraint checking for the architecture.
@@ -309,6 +358,19 @@ func (a *Architecture) processEventCascade(e *gorapide.Event) {
 					queue = append(queue, newEvent)
 				}
 			}
+		}
+
+		// Evaluate dynamic bindings.
+		bindings := a.bindings.BindingsFrom(current.Source)
+		for _, binding := range bindings {
+			a.mu.RLock()
+			target, targetOK := a.components[binding.ToComp]
+			a.mu.RUnlock()
+			if !targetOK {
+				continue
+			}
+			newEvents := a.bindings.executeBinding(binding, current, target, a.poset)
+			queue = append(queue, newEvents...)
 		}
 
 		// Notify global observers.
