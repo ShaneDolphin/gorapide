@@ -14,13 +14,14 @@ import (
 // Architecture composes components, connections, and constraints into
 // a runnable Rapide system.
 type Architecture struct {
-	Name        string
-	components  map[string]*Component
-	connections []*Connection
-	bindings    *BindingManager
-	poset       *gorapide.Poset
-	onEvent     []func(*gorapide.Event)
-	events      chan *gorapide.Event // router notification channel
+	Name             string
+	components       map[string]*Component
+	connections      []*Connection
+	bindings         *BindingManager
+	subArchitectures map[string]*SubArchitecture
+	poset            *gorapide.Poset
+	onEvent []func(*gorapide.Event)
+	events  chan *gorapide.Event // router notification channel
 
 	constraintSet  *constraint.ConstraintSet
 	constraintMode constraint.CheckMode
@@ -54,10 +55,11 @@ func WithObserver(fn func(*gorapide.Event)) ArchOption {
 // NewArchitecture creates a new architecture with the given name.
 func NewArchitecture(name string, opts ...ArchOption) *Architecture {
 	a := &Architecture{
-		Name:       name,
-		components: make(map[string]*Component),
-		bindings:   NewBindingManager(),
-		events:     make(chan *gorapide.Event, 1024),
+		Name:             name,
+		components:       make(map[string]*Component),
+		bindings:         NewBindingManager(),
+		subArchitectures: make(map[string]*SubArchitecture),
+		events:           make(chan *gorapide.Event, 1024),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -88,13 +90,17 @@ func (a *Architecture) AddConnection(conn *Connection) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if conn.From != "*" {
-		if _, ok := a.components[conn.From]; !ok {
-			return fmt.Errorf("arch: source component %q not found", conn.From)
+		_, compOK := a.components[conn.From]
+		_, subOK := a.subArchitectures[conn.From]
+		if !compOK && !subOK {
+			return fmt.Errorf("arch: source %q not found", conn.From)
 		}
 	}
 	if conn.To != "*" {
-		if _, ok := a.components[conn.To]; !ok {
-			return fmt.Errorf("arch: target component %q not found", conn.To)
+		_, compOK := a.components[conn.To]
+		_, subOK := a.subArchitectures[conn.To]
+		if !compOK && !subOK {
+			return fmt.Errorf("arch: target %q not found", conn.To)
 		}
 	}
 	a.connections = append(a.connections, conn)
@@ -173,6 +179,31 @@ func (a *Architecture) UnbindByID(id string) error {
 // Bindings returns all active bindings.
 func (a *Architecture) Bindings() []*Binding {
 	return a.bindings.ActiveBindings()
+}
+
+// AddSubArchitecture registers a sub-architecture in the parent architecture.
+// The sub-architecture's ID must not conflict with any component ID.
+func (a *Architecture) AddSubArchitecture(sa *SubArchitecture) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.components[sa.id]; exists {
+		return fmt.Errorf("arch: ID %q already used by a component", sa.id)
+	}
+	if _, exists := a.subArchitectures[sa.id]; exists {
+		return fmt.Errorf("arch: sub-architecture %q already exists", sa.id)
+	}
+	sa.onEmit = a.notify
+	sa.parentPoset = a.poset
+	a.subArchitectures[sa.id] = sa
+	return nil
+}
+
+// SubArchitecture looks up a sub-architecture by ID.
+func (a *Architecture) SubArchitecture(id string) (*SubArchitecture, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	sa, ok := a.subArchitectures[id]
+	return sa, ok
 }
 
 // WithConstraints configures constraint checking for the architecture.
@@ -255,6 +286,10 @@ func (a *Architecture) Start(ctx context.Context) error {
 	for _, c := range a.components {
 		c.Start(a.ctx)
 	}
+	// Start all sub-architectures.
+	for _, sa := range a.subArchitectures {
+		sa.Start(a.ctx)
+	}
 	return nil
 }
 
@@ -295,6 +330,16 @@ func (a *Architecture) Wait() {
 	a.mu.RUnlock()
 	for _, c := range comps {
 		c.Wait()
+	}
+	// Wait for all sub-architectures.
+	a.mu.RLock()
+	subs := make([]*SubArchitecture, 0, len(a.subArchitectures))
+	for _, sa := range a.subArchitectures {
+		subs = append(subs, sa)
+	}
+	a.mu.RUnlock()
+	for _, sa := range subs {
+		sa.Wait()
 	}
 	// Wait for checker.
 	if ch != nil {
@@ -371,6 +416,22 @@ func (a *Architecture) processEventCascade(e *gorapide.Event) {
 			}
 			newEvents := a.bindings.executeBinding(binding, current, target, a.poset)
 			queue = append(queue, newEvents...)
+		}
+
+		// Evaluate sub-architecture import rules.
+		a.mu.RLock()
+		subs := make([]*SubArchitecture, 0, len(a.subArchitectures))
+		for _, sa := range a.subArchitectures {
+			subs = append(subs, sa)
+		}
+		a.mu.RUnlock()
+		for _, sa := range subs {
+			for _, rule := range sa.importRules {
+				if current.Name == rule.OuterEvent {
+					sa.Send(current)
+					break
+				}
+			}
 		}
 
 		// Notify global observers.

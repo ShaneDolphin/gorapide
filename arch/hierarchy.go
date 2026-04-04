@@ -173,8 +173,21 @@ func (sa *SubArchitecture) processImport(e *gorapide.Event) {
 			params = rule.Transform(e)
 		}
 
-		// Inject into inner architecture.
-		sa.inner.Inject(rule.InnerEvent, params)
+		if rule.InnerTarget != "" {
+			// Route directly to target component inside the inner architecture.
+			target, ok := sa.inner.Component(rule.InnerTarget)
+			if !ok {
+				continue
+			}
+			inner := gorapide.NewEvent(rule.InnerEvent, rule.InnerTarget, params)
+			sa.inner.Poset().AddEvent(inner)
+			target.Send(inner)
+			// Also notify inner router so connections/observers see it.
+			sa.inner.notify(inner)
+		} else {
+			// Broadcast into inner architecture.
+			sa.inner.Inject(rule.InnerEvent, params)
+		}
 	}
 }
 
