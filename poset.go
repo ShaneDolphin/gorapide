@@ -20,8 +20,9 @@ type Poset struct {
 	events        map[EventID]*Event
 	causalEdges   map[EventID]map[EventID]bool // from -> {to: true}
 	reverseCausal map[EventID]map[EventID]bool // to -> {from: true}
-	mu            sync.RWMutex
+	mu             sync.RWMutex
 	lamportCounter uint64
+	pendingEdges   []PendingEdge
 }
 
 // NewPoset creates an empty Poset.
@@ -52,6 +53,53 @@ func (p *Poset) addEventLocked(e *Event) error {
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
 	return nil
+}
+
+func (p *Poset) mergeEventLocked(e *Event) error {
+	if _, exists := p.events[e.ID]; exists {
+		return fmt.Errorf("%w: %s", ErrEventExists, e.ID)
+	}
+	e.Freeze()
+	p.events[e.ID] = e
+	p.causalEdges[e.ID] = make(map[EventID]bool)
+	p.reverseCausal[e.ID] = make(map[EventID]bool)
+	if e.Clock.Lamport > p.lamportCounter {
+		p.lamportCounter = e.Clock.Lamport
+	}
+	return nil
+}
+
+// DrainPendingEdges attempts to resolve all buffered pending edges whose
+// endpoints are now present in the poset. Returns the count of resolved
+// edges and any errors encountered during resolution.
+func (p *Poset) DrainPendingEdges() (int, []error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var remaining []PendingEdge
+	var errs []error
+	resolved := 0
+	for _, pe := range p.pendingEdges {
+		_, fromOK := p.events[pe.From]
+		_, toOK := p.events[pe.To]
+		if !fromOK || !toOK {
+			remaining = append(remaining, pe)
+			continue
+		}
+		if err := p.addCausalLocked(pe.From, pe.To); err != nil {
+			errs = append(errs, err)
+		} else {
+			resolved++
+		}
+	}
+	p.pendingEdges = remaining
+	return resolved, errs
+}
+
+// PendingEdgeCount returns the number of buffered pending edges.
+func (p *Poset) PendingEdgeCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.pendingEdges)
 }
 
 // AddCausal establishes that event 'from' causally precedes event 'to'.

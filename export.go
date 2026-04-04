@@ -12,12 +12,13 @@ import (
 
 // EventExport is the JSON-serializable representation of an Event.
 type EventExport struct {
-	ID       string         `json:"id"`
-	Name     string         `json:"name"`
-	Params   map[string]any `json:"params"`
-	Source   string         `json:"source"`
-	Lamport  uint64         `json:"lamport"`
-	WallTime string         `json:"wall_time"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Params      map[string]any    `json:"params"`
+	Source      string            `json:"source"`
+	Lamport     uint64            `json:"lamport"`
+	WallTime    string            `json:"wall_time"`
+	VectorClock map[string]uint64 `json:"vector_clock,omitempty"`
 }
 
 // PosetExport is the JSON-serializable representation of a Poset.
@@ -44,14 +45,21 @@ func (p *Poset) MarshalJSON() ([]byte, error) {
 	events := make([]EventExport, 0, len(ids))
 	for _, id := range ids {
 		e := p.events[id]
-		events = append(events, EventExport{
+		ee := EventExport{
 			ID:       string(e.ID),
 			Name:     e.Name,
 			Params:   e.Params,
 			Source:   e.Source,
 			Lamport:  e.Clock.Lamport,
 			WallTime: e.Clock.WallTime.Format(time.RFC3339Nano),
-		})
+		}
+		if e.Clock.Vector != nil {
+			ee.VectorClock = make(map[string]uint64, len(e.Clock.Vector))
+			for k, v := range e.Clock.Vector {
+				ee.VectorClock[string(k)] = v
+			}
+		}
+		events = append(events, ee)
 	}
 
 	var edges [][]string
@@ -108,6 +116,12 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 			Source:    ee.Source,
 			Clock:     ClockStamp{Lamport: ee.Lamport, WallTime: wallTime},
 			Immutable: true,
+		}
+		if ee.VectorClock != nil {
+			e.Clock.Vector = make(VectorClock, len(ee.VectorClock))
+			for k, v := range ee.VectorClock {
+				e.Clock.Vector[NodeID(k)] = v
+			}
 		}
 		if e.Params == nil {
 			e.Params = make(map[string]any)
