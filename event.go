@@ -36,8 +36,9 @@ func (id EventID) Short() string {
 
 // ClockStamp holds both logical and physical time for an event.
 type ClockStamp struct {
-	Lamport  uint64    // Logical Lamport timestamp for causal ordering
-	WallTime time.Time // Wall clock time for temporal ordering
+	Lamport  uint64      // Logical Lamport timestamp for causal ordering
+	WallTime time.Time   // Wall clock time for temporal ordering
+	Vector   VectorClock // Optional vector clock for distributed mode (nil = single-node)
 }
 
 // Before reports whether this ClockStamp is causally before other,
