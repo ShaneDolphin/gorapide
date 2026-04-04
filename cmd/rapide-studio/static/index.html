@@ -1,8 +1,40 @@
 <!DOCTYPE html>
-<html>
-<head><title>Rapide Studio</title></head>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapide Studio</title>
+    <link rel="stylesheet" href="style.css">
+</head>
 <body>
-<h1>Rapide Studio</h1>
-<p>Architecture editor coming soon.</p>
+    <div id="toolbar">
+        <button onclick="addComponent()">+ Component</button>
+        <button onclick="addConnection()">+ Connection</button>
+        <span class="separator">|</span>
+        <button onclick="saveArchitecture()">Save</button>
+        <button onclick="loadArchitecture()">Load</button>
+        <span class="separator">|</span>
+        <button onclick="startSim()" id="btn-start">Simulate</button>
+        <button onclick="stopSim()" id="btn-stop" disabled>Stop</button>
+        <button onclick="injectEvent()">Inject Event</button>
+        <span id="sim-status"></span>
+    </div>
+    <div id="main">
+        <div id="cy"></div>
+        <div id="sidebar">
+            <div id="inspector">
+                <h3>Inspector</h3>
+                <div id="inspector-content">
+                    <p class="hint">Click a component or connection to inspect.</p>
+                </div>
+            </div>
+            <div id="events">
+                <h3>Events <span id="event-count">(0)</span></h3>
+                <div id="event-list"></div>
+            </div>
+        </div>
+    </div>
+    <script src="lib/cytoscape.min.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>
