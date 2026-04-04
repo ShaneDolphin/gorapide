@@ -52,6 +52,7 @@ type LiveExporter struct {
 	traceID  oteltrace.TraceID
 	poset    *gorapide.Poset
 	batcher  *batcher
+	bridge   *otlpBridge
 	exported map[gorapide.EventID]bool
 	count    atomic.Int64
 	mu       sync.Mutex
@@ -69,7 +70,20 @@ func NewLiveExporter(cfg Config) (*LiveExporter, error) {
 		traceID:  tid,
 		exported: make(map[gorapide.EventID]bool),
 	}
-	le.batcher = newBatcher(cfg.BatchSize, cfg.BatchTimeout, le.exportBatch)
+
+	if cfg.Endpoint != "" {
+		bridge, err := newOTLPBridge(context.Background(), cfg)
+		if err != nil {
+			return nil, err
+		}
+		le.bridge = bridge
+		le.batcher = newBatcher(cfg.BatchSize, cfg.BatchTimeout, func(ctx context.Context, batch []spanData) {
+			_ = bridge.export(ctx, batch)
+		})
+	} else {
+		le.batcher = newBatcher(cfg.BatchSize, cfg.BatchTimeout, le.exportBatch)
+	}
+
 	le.batcher.start()
 	return le, nil
 }
@@ -146,6 +160,9 @@ func (le *LiveExporter) OnEvent(e *gorapide.Event) {
 // Shutdown flushes remaining spans and stops the batcher.
 func (le *LiveExporter) Shutdown(ctx context.Context) error {
 	le.batcher.stop(ctx)
+	if le.bridge != nil {
+		return le.bridge.shutdown(ctx)
+	}
 	return nil
 }
 
