@@ -301,17 +301,12 @@ func TestPosetReadWriterWithBuilder(t *testing.T) {
 	}
 }
 
-// Verify MapTarget and BindingTarget interfaces exist and are documentable.
-func TestPlaceholderInterfacesExist(t *testing.T) {
-	// These are compile-time checks. The interfaces exist but have no
-	// implementations yet. We verify they are properly defined by
-	// attempting type assertions on nil values.
+func TestMapTargetAndBindingTargetSatisfied(t *testing.T) {
 	var m MapTarget
+	var b BindingTarget
 	if m != nil {
 		t.Error("nil MapTarget should be nil")
 	}
-
-	var b BindingTarget
 	if b != nil {
 		t.Error("nil BindingTarget should be nil")
 	}

@@ -44,6 +44,10 @@ type PosetReadWriter interface {
 // Compile-time assertion that *Poset satisfies PosetReadWriter.
 var _ PosetReadWriter = (*Poset)(nil)
 
+// Compile-time assertions that arch.Map satisfies MapTarget
+// and arch.BindingManager satisfies BindingTarget are in the arch package
+// (they cannot be here due to import cycle). See arch/mapping.go and arch/binding.go.
+
 // ---------------------------------------------------------------------------
 // EventStore interface methods on *Poset
 // ---------------------------------------------------------------------------
