@@ -302,8 +302,17 @@ func (a *Architecture) Stop() error {
 	}
 	a.running = false
 	ch := a.checker
+	subs := make([]*SubArchitecture, 0, len(a.subArchitectures))
+	for _, sa := range a.subArchitectures {
+		subs = append(subs, sa)
+	}
 	a.cancel()
 	a.mu.Unlock()
+
+	// Stop all sub-architectures so their inner checkers shut down.
+	for _, sa := range subs {
+		sa.Stop()
+	}
 
 	if ch != nil {
 		ch.Stop()
