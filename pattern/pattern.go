@@ -8,7 +8,7 @@ package pattern
 import (
 	"fmt"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // PosetReader is the minimal interface a pattern needs to query a poset.

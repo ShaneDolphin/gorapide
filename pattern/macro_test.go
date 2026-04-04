@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 func TestNewMacroRegistryHasBuiltins(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 // BehaviorRule defines a reactive transition rule: when the trigger pattern

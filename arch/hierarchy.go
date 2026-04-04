@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // ExportRule defines how an inner event becomes visible to the parent architecture.

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // --- MapBuilder Tests ---

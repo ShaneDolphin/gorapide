@@ -75,7 +75,7 @@ package arch
 import (
 	"testing"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 func TestNewMapBuilder(t *testing.T) {
@@ -160,7 +160,7 @@ package arch
 import (
 	"fmt"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // EventTranslation defines how a single source action maps to a target action,
@@ -690,7 +690,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // Binding represents a dynamic runtime connection between two components,
@@ -1087,8 +1087,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 func TestBindingRoutesEvents(t *testing.T) {
@@ -1449,12 +1449,12 @@ mkdir -p otelexport
 Create `otelexport/go.mod`:
 
 ```
-module github.com/beautiful-majestic-dolphin/gorapide/otelexport
+module github.com/ShaneDolphin/gorapide/otelexport
 
 go 1.22
 
 require (
-	github.com/beautiful-majestic-dolphin/gorapide v0.0.0
+	github.com/ShaneDolphin/gorapide v0.0.0
 	go.opentelemetry.io/otel v1.35.0
 	go.opentelemetry.io/otel/sdk v1.35.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.35.0
@@ -1462,7 +1462,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.35.0
 )
 
-replace github.com/beautiful-majestic-dolphin/gorapide => ../
+replace github.com/ShaneDolphin/gorapide => ../
 ```
 
 Create `otelexport/doc.go`:
@@ -1498,7 +1498,7 @@ package otelexport
 import (
 	"testing"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 func TestSpanIDFromEventID(t *testing.T) {
@@ -1566,7 +1566,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -1901,7 +1901,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 func TestLiveExporterOnEvent(t *testing.T) {
@@ -2043,7 +2043,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 

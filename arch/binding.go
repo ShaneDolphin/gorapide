@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // Binding represents a dynamic runtime wiring between two components.

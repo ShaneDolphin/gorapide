@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // MemNetwork is an in-memory network connecting MemTransport instances.

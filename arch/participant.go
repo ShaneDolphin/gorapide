@@ -3,7 +3,7 @@ package arch
 import (
 	"context"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // Participant is the common interface for anything that can participate

@@ -7,8 +7,8 @@ import (
 	"log"
 	"net/http"
 
-	gorapide "github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/studio"
+	gorapide "github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/studio"
 )
 
 // listArchitectures returns a JSON array of {id, name} objects.

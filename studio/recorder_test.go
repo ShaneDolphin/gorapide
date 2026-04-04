@@ -3,7 +3,7 @@ package studio
 import (
 	"testing"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 func TestRecorderCapturesEvents(t *testing.T) {

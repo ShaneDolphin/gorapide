@@ -3,7 +3,7 @@ package dsync
 import (
 	"context"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide"
 )
 
 // Transport abstracts the network layer for poset synchronization.

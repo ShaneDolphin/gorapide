@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/beautiful-majestic-dolphin/gorapide"
-	"github.com/beautiful-majestic-dolphin/gorapide/pattern"
+	"github.com/ShaneDolphin/gorapide"
+	"github.com/ShaneDolphin/gorapide/pattern"
 )
 
 // ConstraintKind distinguishes match vs never clauses.

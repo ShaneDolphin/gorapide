@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/beautiful-majestic-dolphin/gorapide/constraint"
+	"github.com/ShaneDolphin/gorapide/constraint"
 )
 
 // HierarchicalViolationReport organizes constraint violations by hierarchy level.

@@ -1,9 +1,9 @@
-module github.com/beautiful-majestic-dolphin/gorapide/otelexport
+module github.com/ShaneDolphin/gorapide/otelexport
 
 go 1.25.0
 
 require (
-	github.com/beautiful-majestic-dolphin/gorapide v0.0.0
+	github.com/ShaneDolphin/gorapide v0.0.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0
@@ -31,4 +31,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/beautiful-majestic-dolphin/gorapide => ../
+replace github.com/ShaneDolphin/gorapide => ../
