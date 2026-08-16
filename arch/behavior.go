@@ -1,6 +1,7 @@
 package arch
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -70,11 +71,16 @@ func (bc BehaviorContext) ParamFrom(eventName, paramKey string) any {
 
 // OnEvent registers a behavior that triggers when an event with the given
 // name is observed. Shorthand for OnPattern with MatchEvent(name).
+//
+// Deprecated: callback behavior is outside the deterministic trusted core.
+// Use AddDeclarativeRule or AddDeclarativeProcess with closed model data.
 func (c *Component) OnEvent(name string, action func(BehaviorContext)) *Component {
 	return c.OnPattern(name, pattern.MatchEvent(name), action)
 }
 
 // OnPattern registers a behavior rule with the given trigger pattern.
+//
+// Deprecated: callback behavior is outside the deterministic trusted core.
 func (c *Component) OnPattern(name string, trigger pattern.Pattern, action func(BehaviorContext)) *Component {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -89,6 +95,8 @@ func (c *Component) OnPattern(name string, trigger pattern.Pattern, action func(
 }
 
 // OnPatternOnce registers a behavior rule that fires only once.
+//
+// Deprecated: callback behavior is outside the deterministic trusted core.
 func (c *Component) OnPatternOnce(name string, trigger pattern.Pattern, action func(BehaviorContext)) *Component {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -120,20 +128,26 @@ func (c *Component) observe(e *gorapide.Event) {
 	copy(rules, c.rules)
 	c.mu.Unlock()
 
-	view := &observationView{
-		observed: c.observed,
-		poset:    c.poset,
-	}
-
 	for _, rule := range rules {
 		if !rule.active {
 			continue
 		}
-		matches := rule.Trigger.Match(view)
+		available, err := c.consumed.Available(rule.Name, c.observed)
+		if err != nil {
+			panic(fmt.Sprintf("arch.Component.observe: %v", err))
+		}
+		ruleView := newObservationView(available, c.poset)
+		matches := rule.Trigger.Match(ruleView)
 		for _, matched := range matches {
 			key := matchKey(matched)
 			if rule.firedKeys[key] {
 				continue
+			}
+			if err := c.consumed.Consume(rule.Name, matched); err != nil {
+				if errors.Is(err, ErrEventConsumedByRule) {
+					continue
+				}
+				panic(fmt.Sprintf("arch.Component.observe: %v", err))
 			}
 			rule.firedKeys[key] = true
 			rule.Action(BehaviorContext{
@@ -162,59 +176,62 @@ func matchKey(es gorapide.EventSet) string {
 
 // --- observationView implements pattern.PosetReader ---
 
-// observationView wraps a poset but scopes All/ByName/Len to the
-// component's observed events. Causal queries delegate to the real poset.
+// observationView applies Rapide visibility projection to a component's
+// observed event pool.
 type observationView struct {
-	observed gorapide.EventSet
-	poset    *gorapide.Poset
+	*pattern.Projection
+	runtime *functionExecutionRuntime
 }
 
-func (v *observationView) All() gorapide.EventSet {
-	return v.observed
+func newObservationView(
+	observed gorapide.EventSet,
+	poset *gorapide.Poset,
+	runtimes ...*functionExecutionRuntime,
+) *observationView {
+	// Legacy Component.Send permits an observed event that was not first added
+	// to the shared poset. Keep that compatibility path matchable while causal
+	// queries continue to come only from the actual poset. Guaranteed execution
+	// always supplies events already present in the source computation.
+	source := &observationProjectionSource{Poset: poset, extra: observed}
+	projection, err := pattern.NewProjection(source, observed)
+	if err != nil {
+		panic(fmt.Sprintf("arch.newObservationView: %v", err))
+	}
+	view := &observationView{Projection: projection}
+	if len(runtimes) != 0 {
+		view.runtime = runtimes[0]
+	}
+	return view
 }
 
-func (v *observationView) ByName(name string) gorapide.EventSet {
-	var result gorapide.EventSet
-	for _, e := range v.observed {
-		if e.Name == name {
-			result = append(result, e)
+func (view *observationView) ModuleValueForSource(source, expectedType string) (gorapide.RapideModuleValue, bool) {
+	if view == nil || view.runtime == nil {
+		return gorapide.RapideModuleValue{}, false
+	}
+	component := view.runtime.components[source]
+	if component == nil || component.Interface == nil || !strings.EqualFold(component.Interface.Name, expectedType) {
+		return gorapide.RapideModuleValue{}, false
+	}
+	module, exists := view.runtime.modules[source]
+	return module, exists && module.Identity() != ""
+}
+
+type observationProjectionSource struct {
+	*gorapide.Poset
+	extra gorapide.EventSet
+}
+
+func (source *observationProjectionSource) All() gorapide.EventSet {
+	result := source.Poset.All()
+	seen := make(map[gorapide.EventID]bool, len(result)+len(source.extra))
+	for _, event := range result {
+		seen[event.ID] = true
+	}
+	for _, event := range source.extra {
+		if event != nil && !seen[event.ID] {
+			seen[event.ID] = true
+			result = append(result, event)
 		}
 	}
 	return result
-}
-
-func (v *observationView) Len() int {
-	return len(v.observed)
-}
-
-func (v *observationView) IsCausallyBefore(a, b gorapide.EventID) bool {
-	return v.poset.IsCausallyBefore(a, b)
-}
-
-func (v *observationView) IsCausallyIndependent(a, b gorapide.EventID) bool {
-	return v.poset.IsCausallyIndependent(a, b)
-}
-
-func (v *observationView) CausalAncestors(id gorapide.EventID) gorapide.EventSet {
-	return v.poset.CausalAncestors(id)
-}
-
-func (v *observationView) CausalDescendants(id gorapide.EventID) gorapide.EventSet {
-	return v.poset.CausalDescendants(id)
-}
-
-func (v *observationView) CausalChain(from, to gorapide.EventID) (gorapide.EventSet, error) {
-	return v.poset.CausalChain(from, to)
-}
-
-func (v *observationView) Roots() gorapide.EventSet {
-	return v.poset.Roots()
-}
-
-func (v *observationView) Leaves() gorapide.EventSet {
-	return v.poset.Leaves()
-}
-
-func (v *observationView) TopologicalSort() []*gorapide.Event {
-	return v.poset.TopologicalSort()
 }

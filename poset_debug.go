@@ -8,13 +8,14 @@ import (
 
 // PosetStats holds aggregate statistics about a Poset.
 type PosetStats struct {
-	EventCount     int
-	EdgeCount      int
-	RootCount      int
-	LeafCount      int
-	MaxDepth       int     // longest causal chain
-	AvgFanOut      float64 // average number of direct effects per event
-	ComponentCount int     // number of distinct Source values
+	EventCount                  int
+	EdgeCount                   int
+	CausalEquivalenceClassCount int
+	RootCount                   int
+	LeafCount                   int
+	MaxDepth                    int     // longest strict causal chain in the quotient order
+	AvgFanOut                   float64 // average number of direct effects per event
+	ComponentCount              int     // number of distinct Source values
 }
 
 // DOT exports the poset as a Graphviz DOT format string.
@@ -32,9 +33,7 @@ func (p *Poset) DOT() string {
 	for id := range p.events {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		return p.events[ids[i]].Clock.Lamport < p.events[ids[j]].Clock.Lamport
-	})
+	sortEventIDsByLamport(ids, p.events)
 
 	// Nodes.
 	for _, id := range ids {
@@ -49,12 +48,13 @@ func (p *Poset) DOT() string {
 		for toID := range p.causalEdges[fromID] {
 			succs = append(succs, toID)
 		}
-		sort.Slice(succs, func(i, j int) bool {
-			return p.events[succs[i]].Clock.Lamport < p.events[succs[j]].Clock.Lamport
-		})
+		sortEventIDsByLamport(succs, p.events)
 		for _, toID := range succs {
 			b.WriteString(fmt.Sprintf("  %q -> %q;\n", string(fromID), string(toID)))
 		}
+	}
+	for _, pair := range p.causalEquivalencePairsLocked() {
+		b.WriteString(fmt.Sprintf("  %q -> %q [dir=none, style=dashed, label=\"=c\"];\n", string(pair[0]), string(pair[1])))
 	}
 
 	b.WriteString("}\n")
@@ -73,12 +73,13 @@ func (p *Poset) String() string {
 		edgeCount += len(succs)
 	}
 
-	b.WriteString(fmt.Sprintf("Poset: %d events, %d causal edges\n", len(p.events), edgeCount))
+	b.WriteString(fmt.Sprintf("Poset: %d events, %d causal edges (strict), %d nontrivial causal-equivalence classes\n",
+		len(p.events), edgeCount, len(p.nontrivialCausalClassesLocked())))
 
 	// Roots.
 	var roots []string
 	for id, e := range p.events {
-		if len(p.reverseCausal[id]) == 0 {
+		if len(p.causalClassPredecessorsLocked(p.causalRepresentativeLocked(id))) == 0 {
 			roots = append(roots, fmt.Sprintf("%s[%s]", e.Name, e.ID.Short()))
 		}
 	}
@@ -88,7 +89,7 @@ func (p *Poset) String() string {
 	// Leaves.
 	var leaves []string
 	for id, e := range p.events {
-		if len(p.causalEdges[id]) == 0 {
+		if len(p.causalClassSuccessorsLocked(p.causalRepresentativeLocked(id))) == 0 {
 			leaves = append(leaves, fmt.Sprintf("%s[%s]", e.Name, e.ID.Short()))
 		}
 	}
@@ -99,15 +100,28 @@ func (p *Poset) String() string {
 	b.WriteString("Causal structure:\n")
 	sorted := p.topoSortLocked()
 	for _, e := range sorted {
-		preds := make([]string, 0, len(p.reverseCausal[e.ID]))
-		for pred := range p.reverseCausal[e.ID] {
-			preds = append(preds, p.events[pred].Name)
+		preds := make([]string, 0)
+		for _, predecessor := range p.causalClassPredecessorsLocked(p.causalRepresentativeLocked(e.ID)) {
+			for _, member := range p.causalClassMembersLocked(predecessor) {
+				preds = append(preds, p.events[member].Name)
+			}
 		}
 		sort.Strings(preds)
+		equivalents := make([]string, 0)
+		for _, member := range p.causalClassMembersLocked(e.ID) {
+			if member != e.ID {
+				equivalents = append(equivalents, p.events[member].Name)
+			}
+		}
+		sort.Strings(equivalents)
+		equivalenceText := ""
+		if len(equivalents) != 0 {
+			equivalenceText = " =c " + strings.Join(equivalents, ", ")
+		}
 		if len(preds) == 0 {
-			b.WriteString(fmt.Sprintf("  %s[%s] @%s (root)\n", e.Name, e.ID.Short(), e.Source))
+			b.WriteString(fmt.Sprintf("  %s[%s] @%s%s (root)\n", e.Name, e.ID.Short(), e.Source, equivalenceText))
 		} else {
-			b.WriteString(fmt.Sprintf("  %s[%s] @%s <- %s\n", e.Name, e.ID.Short(), e.Source, strings.Join(preds, ", ")))
+			b.WriteString(fmt.Sprintf("  %s[%s] @%s%s <- %s\n", e.Name, e.ID.Short(), e.Source, equivalenceText, strings.Join(preds, ", ")))
 		}
 	}
 
@@ -116,27 +130,33 @@ func (p *Poset) String() string {
 
 // topoSortLocked is TopologicalSort without locking (caller must hold lock).
 func (p *Poset) topoSortLocked() []*Event {
-	inDegree := make(map[EventID]int, len(p.events))
-	for id := range p.events {
-		inDegree[id] = len(p.reverseCausal[id])
+	representatives := p.causalClassRepresentativesLocked()
+	inDegree := make(map[EventID]int, len(representatives))
+	for _, representative := range representatives {
+		inDegree[representative] = len(p.causalClassPredecessorsLocked(representative))
 	}
 	queue := make([]EventID, 0)
-	for id, deg := range inDegree {
+	for _, id := range representatives {
+		deg := inDegree[id]
 		if deg == 0 {
 			queue = append(queue, id)
 		}
 	}
+	sort.Slice(queue, func(i, j int) bool { return queue[i] < queue[j] })
 	result := make([]*Event, 0, len(p.events))
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		result = append(result, p.events[cur])
-		for succ := range p.causalEdges[cur] {
+		for _, member := range p.causalClassMembersLocked(cur) {
+			result = append(result, p.events[member])
+		}
+		for _, succ := range p.causalClassSuccessorsLocked(cur) {
 			inDegree[succ]--
 			if inDegree[succ] == 0 {
 				queue = append(queue, succ)
 			}
 		}
+		sort.Slice(queue, func(i, j int) bool { return queue[i] < queue[j] })
 	}
 	return result
 }
@@ -155,6 +175,24 @@ func (p *Poset) Validate() []error {
 		}
 	}
 
+	// Check every equivalence class has the least member as representative and
+	// all class members share one Lamport position.
+	for id := range p.events {
+		representative := p.causalRepresentativeLocked(id)
+		if _, exists := p.events[representative]; !exists {
+			errs = append(errs, fmt.Errorf("causal equivalence for %s references missing representative %s", id.Short(), representative.Short()))
+			continue
+		}
+		members := p.causalClassMembersLocked(id)
+		if len(members) == 0 || members[0] != representative {
+			errs = append(errs, fmt.Errorf("causal equivalence for %s has noncanonical representative %s", id.Short(), representative.Short()))
+			continue
+		}
+		if p.events[id].Clock.Lamport != p.events[representative].Clock.Lamport {
+			errs = append(errs, fmt.Errorf("causally equivalent events %s and %s have different Lamport positions", id.Short(), representative.Short()))
+		}
+	}
+
 	// Check no dangling edge references.
 	for fromID, succs := range p.causalEdges {
 		if _, ok := p.events[fromID]; !ok {
@@ -163,6 +201,9 @@ func (p *Poset) Validate() []error {
 		for toID := range succs {
 			if _, ok := p.events[toID]; !ok {
 				errs = append(errs, fmt.Errorf("causalEdges contains non-existent target event %s (from %s)", toID.Short(), fromID.Short()))
+			}
+			if p.causalRepresentativeLocked(fromID) == p.causalRepresentativeLocked(toID) {
+				errs = append(errs, fmt.Errorf("strict causal edge %s -> %s is internal to one equivalence class", fromID.Short(), toID.Short()))
 			}
 		}
 	}
@@ -231,10 +272,10 @@ func (p *Poset) Stats() PosetStats {
 	leafCount := 0
 	sources := make(map[string]bool)
 	for id, e := range p.events {
-		if len(p.reverseCausal[id]) == 0 {
+		if len(p.causalClassPredecessorsLocked(p.causalRepresentativeLocked(id))) == 0 {
 			rootCount++
 		}
-		if len(p.causalEdges[id]) == 0 {
+		if len(p.causalClassSuccessorsLocked(p.causalRepresentativeLocked(id))) == 0 {
 			leafCount++
 		}
 		sources[e.Source] = true
@@ -249,13 +290,14 @@ func (p *Poset) Stats() PosetStats {
 	maxDepth := p.maxDepthLocked()
 
 	return PosetStats{
-		EventCount:     len(p.events),
-		EdgeCount:      edgeCount,
-		RootCount:      rootCount,
-		LeafCount:      leafCount,
-		MaxDepth:       maxDepth,
-		AvgFanOut:      avgFanOut,
-		ComponentCount: len(sources),
+		EventCount:                  len(p.events),
+		EdgeCount:                   edgeCount,
+		CausalEquivalenceClassCount: len(p.nontrivialCausalClassesLocked()),
+		RootCount:                   rootCount,
+		LeafCount:                   leafCount,
+		MaxDepth:                    maxDepth,
+		AvgFanOut:                   avgFanOut,
+		ComponentCount:              len(sources),
 	}
 }
 
@@ -265,19 +307,14 @@ func (p *Poset) maxDepthLocked() int {
 	if len(p.events) == 0 {
 		return 0
 	}
-	sorted := p.topoSortLocked()
-	depth := make(map[EventID]int, len(sorted))
+	depths, err := p.causalDepthsLocked()
+	if err != nil {
+		return 0
+	}
 	maxD := 1
-	for _, e := range sorted {
-		d := 1
-		for pred := range p.reverseCausal[e.ID] {
-			if depth[pred]+1 > d {
-				d = depth[pred] + 1
-			}
-		}
-		depth[e.ID] = d
-		if d > maxD {
-			maxD = d
+	for _, depth := range depths {
+		if int(depth) > maxD {
+			maxD = int(depth)
 		}
 	}
 	return maxD
@@ -285,7 +322,7 @@ func (p *Poset) maxDepthLocked() int {
 
 // PosetBuilder provides a fluent API for constructing posets concisely.
 type PosetBuilder struct {
-	source string
+	source  string
 	entries []builderEntry
 	err     error
 }

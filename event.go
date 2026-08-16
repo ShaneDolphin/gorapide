@@ -12,6 +12,10 @@ import (
 type EventID string
 
 // NewEventID generates a new random UUID-based EventID using crypto/rand.
+//
+// Deprecated: random identities are outside the deterministic trusted core.
+// Use NewDeterministicEvent with explicit semantic provenance for replayable
+// computations.
 func NewEventID() EventID {
 	var uuid [16]byte
 	_, err := rand.Read(uuid[:])
@@ -51,21 +55,33 @@ func (c ClockStamp) Before(other ClockStamp) bool {
 // An Event is an immutable, uniquely identifiable tuple of values
 // that exists within causal and temporal ordering relations.
 type Event struct {
-	ID        EventID
-	Name      string
-	Params    map[string]any
-	Clock     ClockStamp
-	Source    string
-	Immutable bool
+	ID     EventID
+	Name   string
+	Params map[string]any
+	Clock  ClockStamp
+	Source string
+	// Timings are start/finish intervals on named Rapide simulation clocks.
+	// They are distinct from legacy Clock.WallTime and Clock.Lamport metadata.
+	Timings []EventTiming
+	// Observations records every qualified action role through which this event
+	// is visible. A Rapide basic connection can make one event occurrence visible
+	// under another component/action name without creating a second occurrence.
+	// Name, Source, and Params are the active observation for legacy callers.
+	Observations []EventObservation
+	Immutable    bool
+
+	expectedCauses []EventID // deterministic provenance invariant
+	deterministic  bool
 }
 
 // NewEvent creates a new Event with an auto-generated ID and WallTime set to now.
 // Lamport starts at 0.
+//
+// Deprecated: this constructor belongs to the legacy/integration surface. Use
+// NewDeterministicEvent for events that contribute to model execution, replay,
+// canonical artifacts, or semantic digests.
 func NewEvent(name string, source string, params map[string]any) *Event {
-	p := make(map[string]any, len(params))
-	for k, v := range params {
-		p[k] = v
-	}
+	p := copyParams(params)
 	return &Event{
 		ID:     NewEventID(),
 		Name:   name,
@@ -75,6 +91,7 @@ func NewEvent(name string, source string, params map[string]any) *Event {
 			Lamport:  0,
 			WallTime: time.Now(),
 		},
+		Observations: []EventObservation{{Name: name, Source: source, Params: copyParams(p)}},
 	}
 }
 
@@ -106,11 +123,20 @@ func (e *Event) ParamInt(key string) int {
 	if !ok {
 		return 0
 	}
-	i, ok := v.(int)
-	if !ok {
+	switch i := v.(type) {
+	case int:
+		return i
+	case int8:
+		return int(i)
+	case int16:
+		return int(i)
+	case int32:
+		return int(i)
+	case int64:
+		return int(i)
+	default:
 		return 0
 	}
-	return i
 }
 
 // String returns a human-readable representation of the event.
@@ -134,11 +160,9 @@ func (e *Event) String() string {
 // to discourage further mutation.
 func (e *Event) Freeze() {
 	e.Immutable = true
-	frozen := make(map[string]any, len(e.Params))
-	for k, v := range e.Params {
-		frozen[k] = v
-	}
-	e.Params = frozen
+	e.Params = copyParams(e.Params)
+	e.Observations = copyObservations(e.Observations)
+	e.Timings = append([]EventTiming(nil), e.Timings...)
 }
 
 // EventSet is an ordered collection of events with helper methods.

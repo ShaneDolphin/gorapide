@@ -20,6 +20,9 @@ type EventTranslation struct {
 // Map defines a translation between two interface vocabularies.
 // It implements gorapide.MapTarget, allowing a source event to be translated
 // into zero or more target events according to its Translations rules.
+//
+// Deprecated: Map is the callback-based legacy adapter and creates legacy
+// events. Use EventPatternMap for closed deterministic Rapide map semantics.
 type Map struct {
 	Name            string
 	SourceInterface *InterfaceDecl
@@ -103,13 +106,15 @@ func (m *Map) String() string {
 
 // MapBuilder builds a Map using a fluent API.
 type MapBuilder struct {
-	name        string
-	source      *InterfaceDecl
-	target      *InterfaceDecl
+	name         string
+	source       *InterfaceDecl
+	target       *InterfaceDecl
 	translations []EventTranslation
 }
 
-// NewMap starts building a new Map with the given name.
+// NewMap starts building a new callback-based legacy Map with the given name.
+//
+// Deprecated: use NewEventPatternMap for deterministic Rapide map semantics.
 func NewMap(name string) *MapBuilder {
 	return &MapBuilder{name: name}
 }

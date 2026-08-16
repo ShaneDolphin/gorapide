@@ -19,16 +19,22 @@ type EventExport struct {
 	Lamport     uint64            `json:"lamport"`
 	WallTime    string            `json:"wall_time"`
 	VectorClock map[string]uint64 `json:"vector_clock,omitempty"`
+	Timings     []EventTiming     `json:"rapide_timings,omitempty"`
 }
 
 // PosetExport is the JSON-serializable representation of a Poset.
 type PosetExport struct {
-	Events      []EventExport     `json:"events"`
-	CausalEdges [][]string        `json:"causal_edges"`
-	Metadata    map[string]string `json:"metadata"`
+	Events             []EventExport     `json:"events"`
+	CausalEquivalences [][]string        `json:"causal_equivalences,omitempty"`
+	CausalEdges        [][]string        `json:"causal_edges"`
+	Metadata           map[string]string `json:"metadata"`
 }
 
 // MarshalJSON implements json.Marshaler for Poset.
+//
+// This is a presentation/integration format: it contains ambient export time
+// and legacy clock metadata. It is not canonical and must not be used for
+// replay, semantic identity, or digest comparison. Use MarshalCanonical.
 func (p *Poset) MarshalJSON() ([]byte, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -38,9 +44,7 @@ func (p *Poset) MarshalJSON() ([]byte, error) {
 	for id := range p.events {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		return p.events[ids[i]].Clock.Lamport < p.events[ids[j]].Clock.Lamport
-	})
+	sortEventIDsByLamport(ids, p.events)
 
 	events := make([]EventExport, 0, len(ids))
 	for _, id := range ids {
@@ -48,10 +52,11 @@ func (p *Poset) MarshalJSON() ([]byte, error) {
 		ee := EventExport{
 			ID:       string(e.ID),
 			Name:     e.Name,
-			Params:   e.Params,
+			Params:   copyParams(e.Params),
 			Source:   e.Source,
 			Lamport:  e.Clock.Lamport,
 			WallTime: e.Clock.WallTime.Format(time.RFC3339Nano),
+			Timings:  append([]EventTiming(nil), e.Timings...),
 		}
 		if e.Clock.Vector != nil {
 			ee.VectorClock = make(map[string]uint64, len(e.Clock.Vector))
@@ -69,21 +74,27 @@ func (p *Poset) MarshalJSON() ([]byte, error) {
 			edges = append(edges, []string{string(fromID), string(toID)})
 		}
 	}
-
 	edgeCount := 0
 	for _, succs := range p.causalEdges {
 		edgeCount += len(succs)
 	}
 
 	export := PosetExport{
-		Events:      events,
-		CausalEdges: edges,
+		Events: events,
 		Metadata: map[string]string{
 			"event_count": fmt.Sprintf("%d", len(p.events)),
 			"edge_count":  fmt.Sprintf("%d", edgeCount),
 			"exported_at": time.Now().Format(time.RFC3339),
 		},
 	}
+	for _, class := range p.nontrivialCausalClassesLocked() {
+		members := make([]string, len(class))
+		for index, member := range class {
+			members[index] = string(member)
+		}
+		export.CausalEquivalences = append(export.CausalEquivalences, members)
+	}
+	export.CausalEdges = edges
 	return json.Marshal(export)
 }
 
@@ -101,6 +112,7 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 	p.events = make(map[EventID]*Event, len(export.Events))
 	p.causalEdges = make(map[EventID]map[EventID]bool, len(export.Events))
 	p.reverseCausal = make(map[EventID]map[EventID]bool, len(export.Events))
+	p.causalClass = make(map[EventID]EventID, len(export.Events))
 	p.lamportCounter = 0
 
 	// Restore events.
@@ -116,7 +128,13 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 			Source:    ee.Source,
 			Clock:     ClockStamp{Lamport: ee.Lamport, WallTime: wallTime},
 			Immutable: true,
+			Timings:   append([]EventTiming(nil), ee.Timings...),
 		}
+		timings, err := CanonicalizeEventTimings(e.Timings)
+		if err != nil {
+			return fmt.Errorf("gorapide.Poset.UnmarshalJSON: timing for %s: %w", ee.ID, err)
+		}
+		e.Timings = timings
 		if ee.VectorClock != nil {
 			e.Clock.Vector = make(VectorClock, len(ee.VectorClock))
 			for k, v := range ee.VectorClock {
@@ -129,12 +147,25 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 		p.events[e.ID] = e
 		p.causalEdges[e.ID] = make(map[EventID]bool)
 		p.reverseCausal[e.ID] = make(map[EventID]bool)
+		p.causalClass[e.ID] = e.ID
 		if ee.Lamport > p.lamportCounter {
 			p.lamportCounter = ee.Lamport
 		}
 	}
 
-	// Restore causal edges.
+	// Restore causal equivalence before strict causal edges so the latter are
+	// validated against the quotient order.
+	for index, class := range export.CausalEquivalences {
+		members := make([]EventID, len(class))
+		for memberIndex, member := range class {
+			members[memberIndex] = EventID(member)
+		}
+		if err := p.addCausalEquivalenceClassLocked(members...); err != nil {
+			return fmt.Errorf("gorapide.Poset.UnmarshalJSON: causal equivalence %d: %w", index, err)
+		}
+	}
+
+	// Restore strict causal edges.
 	for _, edge := range export.CausalEdges {
 		if len(edge) != 2 {
 			return fmt.Errorf("gorapide.Poset.UnmarshalJSON: invalid edge %v", edge)
@@ -147,22 +178,22 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 		if _, ok := p.events[to]; !ok {
 			return fmt.Errorf("gorapide.Poset.UnmarshalJSON: edge references unknown event %s", to)
 		}
-		p.causalEdges[from][to] = true
-		p.reverseCausal[to][from] = true
+		if err := p.addCausalLocked(from, to); err != nil {
+			return fmt.Errorf("gorapide.Poset.UnmarshalJSON: edge %s -> %s: %w", from, to, err)
+		}
 	}
 
 	return nil
 }
 
-// sortedSuccessors returns successor IDs sorted by Lamport timestamp.
+// sortedSuccessors returns successor IDs sorted by Lamport timestamp with
+// EventID as the stable tie-break.
 func sortedSuccessors(succs map[EventID]bool, events map[EventID]*Event) []EventID {
 	ids := make([]EventID, 0, len(succs))
 	for id := range succs {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		return events[ids[i]].Clock.Lamport < events[ids[j]].Clock.Lamport
-	})
+	sortEventIDsByLamport(ids, events)
 	return ids
 }
 
@@ -222,6 +253,9 @@ func (p *Poset) DOTWithOptions(opts DOTOptions) string {
 			}
 			b.WriteString(fmt.Sprintf("  %q -> %q%s;\n", string(fromID), string(toID), attrs))
 		}
+	}
+	for _, pair := range p.causalEquivalencePairsLocked() {
+		b.WriteString(fmt.Sprintf("  %q -> %q [dir=none, style=dashed, label=\"=c\"];\n", string(pair[0]), string(pair[1])))
 	}
 
 	b.WriteString("}\n")
@@ -302,9 +336,7 @@ func sortedEventIDs(events map[EventID]*Event) []EventID {
 	for id := range events {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		return events[ids[i]].Clock.Lamport < events[ids[j]].Clock.Lamport
-	})
+	sortEventIDsByLamport(ids, events)
 	return ids
 }
 
@@ -348,6 +380,9 @@ func (p *Poset) Mermaid() string {
 		for _, toID := range succs {
 			b.WriteString(fmt.Sprintf("  %s --> %s\n", mermaidNodeID(fromID), mermaidNodeID(toID)))
 		}
+	}
+	for _, pair := range p.causalEquivalencePairsLocked() {
+		b.WriteString(fmt.Sprintf("  %s -.-|=c| %s\n", mermaidNodeID(pair[0]), mermaidNodeID(pair[1])))
 	}
 
 	return b.String()
@@ -446,8 +481,6 @@ func sortedPredecessors(preds map[EventID]bool, events map[EventID]*Event) []Eve
 	for id := range preds {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		return events[ids[i]].Clock.Lamport < events[ids[j]].Clock.Lamport
-	})
+	sortEventIDsByLamport(ids, events)
 	return ids
 }

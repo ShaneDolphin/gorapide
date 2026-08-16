@@ -2,6 +2,7 @@ package arch
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/ShaneDolphin/gorapide"
@@ -10,6 +11,9 @@ import (
 // Binding represents a dynamic runtime wiring between two components.
 // It connects a source component to a target component, optionally
 // translating events through a Map and using a specific ConnectionKind.
+//
+// Deprecated: Binding is part of the legacy asynchronous adapter and is
+// rejected by deterministic architecture validation.
 type Binding struct {
 	ID       string
 	FromComp string
@@ -37,6 +41,9 @@ func WithBindingKind(k ConnectionKind) BindingOption {
 
 // BindingManager is a thread-safe manager for dynamic runtime bindings.
 // It implements gorapide.BindingTarget.
+//
+// Deprecated: dynamic runtime binding is outside the deterministic trusted
+// core. Express static supported wiring as canonical Rapide connections.
 type BindingManager struct {
 	bindings map[string]*Binding
 	bySource map[string][]string // component ID -> binding IDs
@@ -45,6 +52,9 @@ type BindingManager struct {
 }
 
 // NewBindingManager creates an empty BindingManager.
+//
+// Deprecated: dynamic runtime binding is outside the deterministic trusted
+// core.
 func NewBindingManager() *BindingManager {
 	return &BindingManager{
 		bindings: make(map[string]*Binding),
@@ -152,12 +162,19 @@ func (bm *BindingManager) ActiveBindings() []*Binding {
 	for _, b := range bm.bindings {
 		result = append(result, b)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ID < result[j].ID
+	})
 	return result
 }
 
 // executeBinding processes an event through a binding, creating target events
-// according to the binding's Map and Kind. Returns created events for cascade.
-func (bm *BindingManager) executeBinding(b *Binding, triggerEvent *gorapide.Event, target *Component, poset *gorapide.Poset) []*gorapide.Event {
+// according to the binding's Map and Kind. Returns created events for cascade
+// or the exact mapping, insertion, kind, or inbox-delivery failure.
+func (bm *BindingManager) executeBinding(b *Binding, triggerEvent *gorapide.Event, target *Component, poset *gorapide.Poset) ([]*gorapide.Event, error) {
+	if b == nil || triggerEvent == nil || target == nil || poset == nil {
+		return nil, fmt.Errorf("legacy binding execution requires binding, trigger, target, and poset")
+	}
 	if b.Map != nil {
 		return bm.executeWithMap(b, triggerEvent, target, poset)
 	}
@@ -165,53 +182,72 @@ func (bm *BindingManager) executeBinding(b *Binding, triggerEvent *gorapide.Even
 }
 
 // executeWithMap translates events through the binding's Map.
-func (bm *BindingManager) executeWithMap(b *Binding, triggerEvent *gorapide.Event, target *Component, poset *gorapide.Poset) []*gorapide.Event {
+func (bm *BindingManager) executeWithMap(b *Binding, triggerEvent *gorapide.Event, target *Component, poset *gorapide.Poset) ([]*gorapide.Event, error) {
 	mapped, err := b.Map.MapEvent(triggerEvent)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("binding %q map: %w", b.ID, err)
 	}
 
 	var results []*gorapide.Event
-	for _, me := range mapped {
+	for index, me := range mapped {
+		if me == nil {
+			return results, fmt.Errorf("binding %q map result %d is nil", b.ID, index)
+		}
 		me.Source = target.ID
 
 		switch b.Kind {
 		case PipeConnection:
-			_ = poset.AddEventWithCause(me, triggerEvent.ID)
+			err = poset.AddEventWithCause(me, triggerEvent.ID)
+		case BasicConnection, AgentConnection:
+			err = poset.AddEvent(me)
 		default:
-			_ = poset.AddEvent(me)
+			return results, fmt.Errorf("binding %q has unsupported connection kind %d", b.ID, b.Kind)
 		}
-
-		target.Send(me)
+		if err != nil {
+			return results, fmt.Errorf("binding %q map result %d poset insertion: %w", b.ID, index, err)
+		}
+		if err := target.SendChecked(me); err != nil {
+			return results, fmt.Errorf("binding %q map result %d delivery: %w", b.ID, index, err)
+		}
 		results = append(results, me)
 	}
-	return results
+	return results, nil
 }
 
 // executeIdentity handles identity translation (no Map) based on Kind.
-func (bm *BindingManager) executeIdentity(b *Binding, triggerEvent *gorapide.Event, target *Component, poset *gorapide.Poset) []*gorapide.Event {
+func (bm *BindingManager) executeIdentity(b *Binding, triggerEvent *gorapide.Event, target *Component, poset *gorapide.Poset) ([]*gorapide.Event, error) {
 	switch b.Kind {
 	case AgentConnection:
 		// Forward original event.
-		target.Send(triggerEvent)
-		return nil
+		if err := target.SendChecked(triggerEvent); err != nil {
+			return nil, fmt.Errorf("binding %q agent delivery: %w", b.ID, err)
+		}
+		return nil, nil
 
 	case PipeConnection:
 		params := copyParams(triggerEvent)
 		e := gorapide.NewEvent(triggerEvent.Name, target.ID, params)
-		_ = poset.AddEventWithCause(e, triggerEvent.ID)
-		target.Send(e)
-		return []*gorapide.Event{e}
+		if err := poset.AddEventWithCause(e, triggerEvent.ID); err != nil {
+			return nil, fmt.Errorf("binding %q pipe poset insertion: %w", b.ID, err)
+		}
+		if err := target.SendChecked(e); err != nil {
+			return nil, fmt.Errorf("binding %q pipe delivery: %w", b.ID, err)
+		}
+		return []*gorapide.Event{e}, nil
 
 	case BasicConnection:
 		params := copyParams(triggerEvent)
 		e := gorapide.NewEvent(triggerEvent.Name, target.ID, params)
-		_ = poset.AddEvent(e)
-		target.Send(e)
-		return []*gorapide.Event{e}
+		if err := poset.AddEvent(e); err != nil {
+			return nil, fmt.Errorf("binding %q basic poset insertion: %w", b.ID, err)
+		}
+		if err := target.SendChecked(e); err != nil {
+			return nil, fmt.Errorf("binding %q basic delivery: %w", b.ID, err)
+		}
+		return []*gorapide.Event{e}, nil
 
 	default:
-		return nil
+		return nil, fmt.Errorf("binding %q has unsupported connection kind %d", b.ID, b.Kind)
 	}
 }
 

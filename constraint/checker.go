@@ -22,6 +22,10 @@ const (
 
 // Checker is a runtime constraint checker that evaluates a ConstraintSet
 // against a poset according to a CheckMode schedule.
+//
+// Deprecated: Checker is a live scheduling adapter whose periodic and callback
+// behavior is outside the deterministic trusted core. Use ConstraintSet's
+// synchronous canonical evaluation or an ExecutionResult constraint report.
 type Checker struct {
 	constraints *ConstraintSet
 	mode        CheckMode
@@ -42,6 +46,9 @@ type Checker struct {
 }
 
 // NewChecker creates a runtime constraint checker.
+//
+// Deprecated: use synchronous canonical constraint evaluation for replayable
+// semantic decisions.
 func NewChecker(cs *ConstraintSet, mode CheckMode) *Checker {
 	return &Checker{
 		constraints: cs,

@@ -172,7 +172,10 @@ func TestExecuteBindingWithMap(t *testing.T) {
 	trigger := gorapide.NewEvent("X", "source", map[string]any{"key": "val"})
 	_ = poset.AddEvent(trigger)
 
-	results := bm.executeBinding(b, trigger, target, poset)
+	results, err := bm.executeBinding(b, trigger, target, poset)
+	if err != nil {
+		t.Fatalf("executeBinding with Map: %v", err)
+	}
 	if len(results) != 1 {
 		t.Fatalf("executeBinding with Map: want 1 result, got %d", len(results))
 	}
@@ -200,7 +203,10 @@ func TestExecuteBindingIdentityPipe(t *testing.T) {
 	trigger := gorapide.NewEvent("X", "source", map[string]any{"key": "val"})
 	_ = poset.AddEvent(trigger)
 
-	results := bm.executeBinding(b, trigger, target, poset)
+	results, err := bm.executeBinding(b, trigger, target, poset)
+	if err != nil {
+		t.Fatalf("executeBinding pipe: %v", err)
+	}
 	if len(results) != 1 {
 		t.Fatalf("executeBinding pipe: want 1 result, got %d", len(results))
 	}
@@ -232,7 +238,10 @@ func TestExecuteBindingIdentityBasic(t *testing.T) {
 	trigger := gorapide.NewEvent("X", "source", map[string]any{"key": "val"})
 	_ = poset.AddEvent(trigger)
 
-	results := bm.executeBinding(b, trigger, target, poset)
+	results, err := bm.executeBinding(b, trigger, target, poset)
+	if err != nil {
+		t.Fatalf("executeBinding basic: %v", err)
+	}
 	if len(results) != 1 {
 		t.Fatalf("executeBinding basic: want 1 result, got %d", len(results))
 	}
@@ -258,7 +267,10 @@ func TestExecuteBindingIdentityAgent(t *testing.T) {
 	trigger := gorapide.NewEvent("X", "source", map[string]any{"key": "val"})
 	_ = poset.AddEvent(trigger)
 
-	results := bm.executeBinding(b, trigger, target, poset)
+	results, err := bm.executeBinding(b, trigger, target, poset)
+	if err != nil {
+		t.Fatalf("executeBinding agent: %v", err)
+	}
 	if results != nil {
 		t.Errorf("agent binding should return nil results, got %d", len(results))
 	}
