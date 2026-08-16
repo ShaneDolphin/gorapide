@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1 — 2026-08-16
+
+Distribution-only release: the engineering documentation corpus is no
+longer part of the repository or the module distribution. It is
+maintained privately by the authors. No code changes.
+
 ## v0.2.0 — 2026-08-16
 
 Deterministic Rapide engine (checkpoint RSD-0332). The legacy
