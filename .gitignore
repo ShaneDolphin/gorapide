@@ -1,2 +1,7 @@
-docs/
 .DS_Store
+docs/private/
+docs/superpowers/
+artifacts/
+__pycache__/
+cmd/rapide-studio/rapide-studio
+rtmpack/

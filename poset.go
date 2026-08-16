@@ -3,23 +3,32 @@ package gorapide
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 )
 
 var (
-	ErrEventExists    = errors.New("event already exists in poset")
-	ErrEventNotFound  = errors.New("event not found in poset")
-	ErrCyclicCausal   = errors.New("adding this edge would create a causal cycle")
-	ErrNoPath         = errors.New("no causal path exists between events")
-	ErrSelfCausal     = errors.New("an event cannot causally precede itself")
+	ErrEventExists               = errors.New("event already exists in poset")
+	ErrEventNotFound             = errors.New("event not found in poset")
+	ErrCyclicCausal              = errors.New("adding this edge would create a causal cycle")
+	ErrNoPath                    = errors.New("no causal path exists between events")
+	ErrSelfCausal                = errors.New("an event cannot causally precede itself")
+	ErrCauseMismatch             = errors.New("event causes do not match deterministic provenance")
+	ErrCausalEquivalenceConflict = errors.New("causal equivalence conflicts with strict causal order")
 )
 
-// Poset is a Partially Ordered Event Set that stores events and their
-// causal and temporal ordering relationships. It is safe for concurrent use.
+// Poset stores Rapide event occurrences and their causal and temporal ordering
+// relationships. Causality is a preorder; causal-equivalence classes form the
+// nodes of its quotient partial order. Poset is safe for concurrent use.
 type Poset struct {
 	events        map[EventID]*Event
 	causalEdges   map[EventID]map[EventID]bool // from -> {to: true}
 	reverseCausal map[EventID]map[EventID]bool // to -> {from: true}
+	// causalClass maps every event to the lexicographically least member of
+	// its causal-equivalence class. The quotient of these classes by
+	// causalEdges is a strict DAG; together they represent Rapide's published
+	// causal preorder without storing symmetric graph cycles.
+	causalClass    map[EventID]EventID
 	mu             sync.RWMutex
 	lamportCounter uint64
 	pendingEdges   []PendingEdge
@@ -31,6 +40,7 @@ func NewPoset() *Poset {
 		events:        make(map[EventID]*Event),
 		causalEdges:   make(map[EventID]map[EventID]bool),
 		reverseCausal: make(map[EventID]map[EventID]bool),
+		causalClass:   make(map[EventID]EventID),
 	}
 }
 
@@ -39,30 +49,60 @@ func NewPoset() *Poset {
 func (p *Poset) AddEvent(e *Event) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if e == nil {
+		return fmt.Errorf("%w: event is nil", ErrEventNotFound)
+	}
+	if len(e.expectedCauses) > 0 {
+		return fmt.Errorf("%w: event %s requires %v, got no causes", ErrCauseMismatch, e.ID, e.expectedCauses)
+	}
 	return p.addEventLocked(e)
 }
 
 func (p *Poset) addEventLocked(e *Event) error {
+	if e == nil {
+		return fmt.Errorf("%w: event is nil", ErrEventNotFound)
+	}
 	if _, exists := p.events[e.ID]; exists {
 		return fmt.Errorf("%w: %s", ErrEventExists, e.ID)
 	}
+	timings, err := CanonicalizeEventTimings(e.Timings)
+	if err != nil {
+		return err
+	}
+	e.Timings = timings
 	p.lamportCounter++
 	e.Clock.Lamport = p.lamportCounter
 	e.Freeze()
-	p.events[e.ID] = e
+	stored := e
+	if e.deterministic {
+		stored = cloneEvent(e)
+	}
+	p.events[e.ID] = stored
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
+	p.ensureCausalClassesLocked()
+	p.causalClass[e.ID] = e.ID
 	return nil
 }
 
 func (p *Poset) mergeEventLocked(e *Event) error {
+	if e == nil {
+		return fmt.Errorf("%w: event is nil", ErrEventNotFound)
+	}
 	if _, exists := p.events[e.ID]; exists {
 		return fmt.Errorf("%w: %s", ErrEventExists, e.ID)
 	}
+	timings, err := CanonicalizeEventTimings(e.Timings)
+	if err != nil {
+		return err
+	}
+	e.Timings = timings
 	e.Freeze()
 	p.events[e.ID] = e
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
+	p.ensureCausalClassesLocked()
+	p.causalClass[e.ID] = e.ID
 	if e.Clock.Lamport > p.lamportCounter {
 		p.lamportCounter = e.Clock.Lamport
 	}
@@ -115,13 +155,20 @@ func (p *Poset) addCausalLocked(from, to EventID) error {
 	if from == to {
 		return fmt.Errorf("%w: %s", ErrSelfCausal, from)
 	}
-	fromEvent, ok := p.events[from]
+	_, ok := p.events[from]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrEventNotFound, from)
 	}
-	toEvent, ok := p.events[to]
+	_, ok = p.events[to]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrEventNotFound, to)
+	}
+	p.ensureCausalClassesLocked()
+	originalFrom, originalTo := from, to
+	from = p.causalRepresentativeLocked(from)
+	to = p.causalRepresentativeLocked(to)
+	if from == to {
+		return fmt.Errorf("%w: equivalent events %s and %s cannot be strictly ordered", ErrSelfCausal, originalFrom, originalTo)
 	}
 	// Already exists — idempotent.
 	if p.causalEdges[from][to] {
@@ -131,11 +178,14 @@ func (p *Poset) addCausalLocked(from, to EventID) error {
 	if p.canReachLocked(to, from) {
 		return fmt.Errorf("%w: %s -> %s", ErrCyclicCausal, from, to)
 	}
+	if err := p.validateTimingClosureLocked(from, to); err != nil {
+		return err
+	}
 	p.causalEdges[from][to] = true
 	p.reverseCausal[to][from] = true
-	// Update Lamport: to must be strictly after from.
-	if newLamport := fromEvent.Clock.Lamport + 1; newLamport > toEvent.Clock.Lamport {
-		toEvent.Clock.Lamport = newLamport
+	// Update every member of the target equivalence class.
+	if newLamport := p.maximumClassLamportLocked(from) + 1; newLamport > p.maximumClassLamportLocked(to) {
+		p.setClassLamportLocked(to, newLamport)
 		// Propagate Lamport updates to all descendants.
 		p.propagateLamportLocked(to)
 	}
@@ -145,16 +195,21 @@ func (p *Poset) addCausalLocked(from, to EventID) error {
 // propagateLamportLocked ensures all descendants of id have Lamport timestamps
 // consistent with their causal predecessors. Uses BFS.
 func (p *Poset) propagateLamportLocked(id EventID) {
+	id = p.causalRepresentativeLocked(id)
 	queue := []EventID{id}
+	queued := map[EventID]bool{id: true}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		curEvent := p.events[cur]
-		for succ := range p.causalEdges[cur] {
-			succEvent := p.events[succ]
-			if newLamport := curEvent.Clock.Lamport + 1; newLamport > succEvent.Clock.Lamport {
-				succEvent.Clock.Lamport = newLamport
-				queue = append(queue, succ)
+		delete(queued, cur)
+		currentLamport := p.maximumClassLamportLocked(cur)
+		for _, succ := range p.causalClassSuccessorsLocked(cur) {
+			if newLamport := currentLamport + 1; newLamport > p.maximumClassLamportLocked(succ) {
+				p.setClassLamportLocked(succ, newLamport)
+				if !queued[succ] {
+					queue = append(queue, succ)
+					queued[succ] = true
+				}
 			}
 		}
 	}
@@ -166,10 +221,47 @@ func (p *Poset) propagateLamportLocked(id EventID) {
 func (p *Poset) AddEventWithCause(e *Event, causes ...EventID) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if e == nil {
+		return fmt.Errorf("%w: event is nil", ErrEventNotFound)
+	}
+	timings, err := CanonicalizeEventTimings(e.Timings)
+	if err != nil {
+		return err
+	}
+	e.Timings = timings
+	if len(e.expectedCauses) > 0 {
+		normalized := append([]EventID(nil), causes...)
+		sort.Slice(normalized, func(i, j int) bool { return normalized[i] < normalized[j] })
+		write := 0
+		for _, cause := range normalized {
+			if write > 0 && normalized[write-1] == cause {
+				continue
+			}
+			normalized[write] = cause
+			write++
+		}
+		normalized = normalized[:write]
+		if !eventIDSlicesEqual(normalized, e.expectedCauses) {
+			return fmt.Errorf("%w: event %s requires %v, got %v",
+				ErrCauseMismatch, e.ID, e.expectedCauses, normalized)
+		}
+	}
 	// Validate all causes exist before adding the event.
 	for _, cid := range causes {
 		if _, ok := p.events[cid]; !ok {
 			return fmt.Errorf("%w: cause %s", ErrEventNotFound, cid)
+		}
+	}
+	checked := make(map[EventID]bool)
+	for _, cause := range causes {
+		for _, predecessor := range p.causalPredecessorIDsLocked(cause) {
+			if checked[predecessor] {
+				continue
+			}
+			checked[predecessor] = true
+			if err := sharedTimingConflict(p.events[predecessor], e); err != nil {
+				return err
+			}
 		}
 	}
 	if err := p.addEventLocked(e); err != nil {
@@ -183,12 +275,61 @@ func (p *Poset) AddEventWithCause(e *Event, causes ...EventID) error {
 	return nil
 }
 
+func (p *Poset) validateTimingClosureLocked(from, to EventID) error {
+	left := p.causalPredecessorIDsLocked(from)
+	right := p.causalSuccessorIDsLocked(to)
+	for _, before := range left {
+		for _, after := range right {
+			if err := sharedTimingConflict(p.events[before], p.events[after]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (p *Poset) causalPredecessorIDsLocked(id EventID) []EventID {
+	classes := p.reachableCausalClassesLocked(id, false)
+	result := make([]EventID, 0)
+	for candidate := range p.events {
+		if classes[p.causalRepresentativeLocked(candidate)] {
+			result = append(result, candidate)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
+func (p *Poset) causalSuccessorIDsLocked(id EventID) []EventID {
+	classes := p.reachableCausalClassesLocked(id, true)
+	result := make([]EventID, 0)
+	for candidate := range p.events {
+		if classes[p.causalRepresentativeLocked(candidate)] {
+			result = append(result, candidate)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
+func eventIDSlicesEqual(a, b []EventID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // Event looks up an event by ID.
 func (p *Poset) Event(id EventID) (*Event, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	e, ok := p.events[id]
-	return e, ok
+	return snapshotEvent(e), ok
 }
 
 // Events returns a snapshot of all events in the poset.
@@ -197,8 +338,9 @@ func (p *Poset) Events() EventSet {
 	defer p.mu.RUnlock()
 	set := make(EventSet, 0, len(p.events))
 	for _, e := range p.events {
-		set = append(set, e)
+		set = append(set, snapshotEvent(e))
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -208,10 +350,13 @@ func (p *Poset) EventsByName(name string) EventSet {
 	defer p.mu.RUnlock()
 	var set EventSet
 	for _, e := range p.events {
-		if e.Name == name {
-			set = append(set, e)
+		for _, observation := range e.EventObservations() {
+			if observation.Name == name {
+				set = append(set, eventView(e, observation))
+			}
 		}
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -229,31 +374,19 @@ func (p *Poset) IsCausallyBefore(a, b EventID) bool {
 	if a == b {
 		return false // irreflexive
 	}
+	if _, exists := p.events[a]; !exists {
+		return false
+	}
+	if _, exists := p.events[b]; !exists {
+		return false
+	}
 	return p.canReachLocked(a, b)
 }
 
 // canReachLocked performs BFS from 'start' following causal edges to see if
 // 'target' is reachable. Caller must hold at least a read lock.
 func (p *Poset) canReachLocked(start, target EventID) bool {
-	visited := make(map[EventID]bool)
-	queue := []EventID{start}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		if cur == target {
-			return true
-		}
-		if visited[cur] {
-			continue
-		}
-		visited[cur] = true
-		for succ := range p.causalEdges[cur] {
-			if !visited[succ] {
-				queue = append(queue, succ)
-			}
-		}
-	}
-	return false
+	return p.canReachClassLocked(start, target)
 }
 
 // IsCausallyIndependent reports whether neither a <c b nor b <c a.
@@ -261,6 +394,15 @@ func (p *Poset) IsCausallyIndependent(a, b EventID) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if a == b {
+		return false
+	}
+	if _, exists := p.events[a]; !exists {
+		return false
+	}
+	if _, exists := p.events[b]; !exists {
+		return false
+	}
+	if p.causalRepresentativeLocked(a) == p.causalRepresentativeLocked(b) {
 		return false
 	}
 	return !p.canReachLocked(a, b) && !p.canReachLocked(b, a)
@@ -271,11 +413,15 @@ func (p *Poset) DirectCauses(id EventID) EventSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	var set EventSet
-	for pred := range p.reverseCausal[id] {
-		if e, ok := p.events[pred]; ok {
-			set = append(set, e)
+	if _, exists := p.events[id]; !exists {
+		return set
+	}
+	for _, predecessor := range p.causalClassPredecessorsLocked(p.causalRepresentativeLocked(id)) {
+		for _, member := range p.causalClassMembersLocked(predecessor) {
+			set = append(set, snapshotEvent(p.events[member]))
 		}
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -284,11 +430,15 @@ func (p *Poset) DirectEffects(id EventID) EventSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	var set EventSet
-	for succ := range p.causalEdges[id] {
-		if e, ok := p.events[succ]; ok {
-			set = append(set, e)
+	if _, exists := p.events[id]; !exists {
+		return set
+	}
+	for _, successor := range p.causalClassSuccessorsLocked(p.causalRepresentativeLocked(id)) {
+		for _, member := range p.causalClassMembersLocked(successor) {
+			set = append(set, snapshotEvent(p.events[member]))
 		}
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -297,25 +447,17 @@ func (p *Poset) CausalAncestors(id EventID) EventSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	var set EventSet
-	visited := make(map[EventID]bool)
-	queue := make([]EventID, 0)
-	for pred := range p.reverseCausal[id] {
-		queue = append(queue, pred)
+	if _, exists := p.events[id]; !exists {
+		return set
 	}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		if visited[cur] {
-			continue
-		}
-		visited[cur] = true
-		set = append(set, p.events[cur])
-		for pred := range p.reverseCausal[cur] {
-			if !visited[pred] {
-				queue = append(queue, pred)
-			}
+	classes := p.reachableCausalClassesLocked(id, false)
+	delete(classes, p.causalRepresentativeLocked(id))
+	for candidate, event := range p.events {
+		if classes[p.causalRepresentativeLocked(candidate)] {
+			set = append(set, snapshotEvent(event))
 		}
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -324,25 +466,17 @@ func (p *Poset) CausalDescendants(id EventID) EventSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	var set EventSet
-	visited := make(map[EventID]bool)
-	queue := make([]EventID, 0)
-	for succ := range p.causalEdges[id] {
-		queue = append(queue, succ)
+	if _, exists := p.events[id]; !exists {
+		return set
 	}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		if visited[cur] {
-			continue
-		}
-		visited[cur] = true
-		set = append(set, p.events[cur])
-		for succ := range p.causalEdges[cur] {
-			if !visited[succ] {
-				queue = append(queue, succ)
-			}
+	classes := p.reachableCausalClassesLocked(id, true)
+	delete(classes, p.causalRepresentativeLocked(id))
+	for candidate, event := range p.events {
+		if classes[p.causalRepresentativeLocked(candidate)] {
+			set = append(set, snapshotEvent(event))
 		}
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -363,43 +497,27 @@ func (p *Poset) CausalChain(from, to EventID) (EventSet, error) {
 	// Find all nodes on any path from 'from' to 'to'.
 	// A node N is on some path if from can reach N and N can reach to.
 	// First collect all nodes reachable from 'from'.
-	forwardReachable := make(map[EventID]bool)
-	p.collectReachableLocked(from, forwardReachable, true)
-	forwardReachable[from] = true
+	forwardReachable := p.reachableCausalClassesLocked(from, true)
 	// Then collect all nodes that can reach 'to' (reverse traversal).
-	backwardReachable := make(map[EventID]bool)
-	p.collectReachableLocked(to, backwardReachable, false)
-	backwardReachable[to] = true
+	backwardReachable := p.reachableCausalClassesLocked(to, false)
 	// Intersection is the set of events on any causal path.
 	var chain EventSet
-	for id := range forwardReachable {
-		if backwardReachable[id] {
-			chain = append(chain, p.events[id])
+	for id, event := range p.events {
+		representative := p.causalRepresentativeLocked(id)
+		if forwardReachable[representative] && backwardReachable[representative] {
+			chain = append(chain, snapshotEvent(event))
 		}
 	}
+	sortEventSet(chain)
 	return chain, nil
 }
 
 // collectReachableLocked does BFS from start, following edges forward or backward.
 func (p *Poset) collectReachableLocked(start EventID, visited map[EventID]bool, forward bool) {
-	queue := []EventID{start}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		if visited[cur] {
-			continue
-		}
-		visited[cur] = true
-		var neighbors map[EventID]bool
-		if forward {
-			neighbors = p.causalEdges[cur]
-		} else {
-			neighbors = p.reverseCausal[cur]
-		}
-		for next := range neighbors {
-			if !visited[next] {
-				queue = append(queue, next)
-			}
+	classes := p.reachableCausalClassesLocked(start, forward)
+	for id := range p.events {
+		if classes[p.causalRepresentativeLocked(id)] {
+			visited[id] = true
 		}
 	}
 }
@@ -410,10 +528,11 @@ func (p *Poset) Roots() EventSet {
 	defer p.mu.RUnlock()
 	var set EventSet
 	for id, e := range p.events {
-		if len(p.reverseCausal[id]) == 0 {
-			set = append(set, e)
+		if len(p.causalClassPredecessorsLocked(p.causalRepresentativeLocked(id))) == 0 {
+			set = append(set, snapshotEvent(e))
 		}
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -423,10 +542,11 @@ func (p *Poset) Leaves() EventSet {
 	defer p.mu.RUnlock()
 	var set EventSet
 	for id, e := range p.events {
-		if len(p.causalEdges[id]) == 0 {
-			set = append(set, e)
+		if len(p.causalClassSuccessorsLocked(p.causalRepresentativeLocked(id))) == 0 {
+			set = append(set, snapshotEvent(e))
 		}
 	}
+	sortEventSet(set)
 	return set
 }
 
@@ -435,32 +555,46 @@ func (p *Poset) Leaves() EventSet {
 func (p *Poset) TopologicalSort() []*Event {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-
-	// Compute in-degrees.
-	inDegree := make(map[EventID]int, len(p.events))
-	for id := range p.events {
-		inDegree[id] = len(p.reverseCausal[id])
+	representatives := p.causalClassRepresentativesLocked()
+	inDegree := make(map[EventID]int, len(representatives))
+	for _, representative := range representatives {
+		inDegree[representative] = len(p.causalClassPredecessorsLocked(representative))
 	}
-
-	// Seed queue with roots (in-degree 0).
 	queue := make([]EventID, 0)
-	for id, deg := range inDegree {
+	for _, id := range representatives {
+		deg := inDegree[id]
 		if deg == 0 {
 			queue = append(queue, id)
 		}
 	}
+	sort.Slice(queue, func(i, j int) bool { return queue[i] < queue[j] })
 
 	result := make([]*Event, 0, len(p.events))
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		result = append(result, p.events[cur])
-		for succ := range p.causalEdges[cur] {
+		for _, member := range p.causalClassMembersLocked(cur) {
+			result = append(result, snapshotEvent(p.events[member]))
+		}
+		for _, succ := range p.causalClassSuccessorsLocked(cur) {
 			inDegree[succ]--
 			if inDegree[succ] == 0 {
 				queue = append(queue, succ)
 			}
 		}
+		sort.Slice(queue, func(i, j int) bool { return queue[i] < queue[j] })
 	}
 	return result
+}
+
+func sortEventSet(events EventSet) {
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].ID != events[j].ID {
+			return events[i].ID < events[j].ID
+		}
+		if events[i].Source != events[j].Source {
+			return events[i].Source < events[j].Source
+		}
+		return events[i].Name < events[j].Name
+	})
 }

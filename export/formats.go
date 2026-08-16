@@ -18,7 +18,7 @@ type SpanJSON struct {
 	ParentID   string            `json:"parentSpanId,omitempty"`
 	Name       string            `json:"operationName"`
 	StartTime  int64             `json:"startTime"` // microseconds since epoch
-	Duration   int64             `json:"duration"`   // microseconds
+	Duration   int64             `json:"duration"`  // microseconds
 	Attributes map[string]string `json:"tags,omitempty"`
 }
 

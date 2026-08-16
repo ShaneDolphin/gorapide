@@ -2,11 +2,11 @@
 // as a Rapide architecture using gorapide. Five components collaborate to
 // produce an Authority-to-Operate (ATO) documentation package:
 //
-//   TrivyScanner     – emits container vulnerability findings
-//   GripeScanner     – emits STIG compliance findings
-//   FindingAggregator – deduplicates and enriches findings
-//   DocumentRenderer  – produces document sections per finding
-//   ATOAssembler      – assembles final ATO package
+//	TrivyScanner     – emits container vulnerability findings
+//	GripeScanner     – emits STIG compliance findings
+//	FindingAggregator – deduplicates and enriches findings
+//	DocumentRenderer  – produces document sections per finding
+//	ATOAssembler      – assembles final ATO package
 //
 // The example intentionally drops one LOW-severity finding to demonstrate
 // constraint violation detection.

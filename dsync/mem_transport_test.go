@@ -2,6 +2,7 @@ package dsync
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -100,5 +101,80 @@ func TestMemTransportSendToUnknown(t *testing.T) {
 	err := t1.Send(ctx, "nonexistent", snap)
 	if err == nil {
 		t.Fatal("expected error when sending to unknown peer")
+	}
+}
+
+func TestMemTransportClosedSenderFailsExplicitly(t *testing.T) {
+	net := NewMemNetwork()
+	sender := net.Transport("sender")
+	net.Transport("receiver")
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := sender.Send(context.Background(), "receiver", &gorapide.Snapshot{NodeID: "sender"}); err == nil {
+		t.Fatal("closed sender reported successful delivery")
+	}
+}
+
+func TestMemTransportSendOwnsSnapshot(t *testing.T) {
+	net := NewMemNetwork()
+	sender := net.Transport("sender")
+	receiver := net.Transport("receiver")
+	snapshot := &gorapide.Snapshot{
+		NodeID: "sender",
+		Events: []gorapide.EventExport{{
+			ID: "event", Name: "Event", Params: map[string]any{"nested": map[string]any{"value": "original"}},
+		}},
+		CausalEdges: [][]string{{"event", "later"}},
+	}
+	if err := sender.Send(context.Background(), "receiver", snapshot); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	snapshot.Events[0].Params["nested"].(map[string]any)["value"] = "mutated"
+	snapshot.CausalEdges[0][0] = "mutated"
+	received := <-receiver.Receive()
+	if got := received.Events[0].Params["nested"].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("received params retained caller-owned state: %v", got)
+	}
+	if received.CausalEdges[0][0] != "event" {
+		t.Fatalf("received edges retained caller-owned state: %v", received.CausalEdges)
+	}
+}
+
+func TestMemTransportCloseUnblocksFullInboxSendWithoutPanic(t *testing.T) {
+	net := NewMemNetwork()
+	sender := net.Transport("sender")
+	receiver := net.Transport("receiver")
+	snapshot := &gorapide.Snapshot{NodeID: "sender"}
+	for index := 0; index < cap(receiver.inbox); index++ {
+		if err := sender.Send(context.Background(), "receiver", snapshot); err != nil {
+			t.Fatalf("prefill %d: %v", index, err)
+		}
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- sender.Send(context.Background(), "receiver", snapshot) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		receiver.mu.Lock()
+		active := receiver.activeSends
+		receiver.mu.Unlock()
+		if active == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for blocked send registration")
+		}
+		runtime.Gosched()
+	}
+	if err := receiver.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("blocked send reported success after target close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("target close did not unblock sender")
 	}
 }

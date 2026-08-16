@@ -48,7 +48,7 @@ type ServiceSchema struct {
 type ConnectionSchema struct {
 	From       string `json:"from"`
 	To         string `json:"to"`
-	Kind       string `json:"kind"`              // "basic", "pipe", "agent"
+	Kind       string `json:"kind"` // "basic", "pipe", "agent"
 	Trigger    string `json:"trigger,omitempty"`
 	ActionName string `json:"action_name"`
 }

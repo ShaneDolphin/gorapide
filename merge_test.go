@@ -1,6 +1,11 @@
 package gorapide
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -66,7 +71,7 @@ func TestMergeOverlapping(t *testing.T) {
 
 	// Remote: has A -> B
 	remote := NewPoset()
-	a2 := &Event{ID: "A", Name: "a", Source: "remote", Params: map[string]any{}, Clock: ClockStamp{WallTime: time.Now()}}
+	a2 := &Event{ID: "A", Name: "a", Source: "local", Params: map[string]any{}, Clock: ClockStamp{WallTime: a.Clock.WallTime}}
 	b := &Event{ID: "B", Name: "b", Source: "remote", Params: map[string]any{}, Clock: ClockStamp{WallTime: time.Now()}}
 	if err := remote.AddEvent(a2); err != nil {
 		t.Fatal(err)
@@ -330,5 +335,226 @@ func TestDrainPendingEdges(t *testing.T) {
 	// Verify edge A->X now exists.
 	if !local.IsCausallyBefore("A", "X") {
 		t.Error("expected A causally before X after drain")
+	}
+}
+
+func TestMergeSnapshotRejectsMalformedWallTimeWithoutAmbientRepair(t *testing.T) {
+	stamp := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	snapshot := &Snapshot{
+		NodeID: "remote",
+		Events: []EventExport{
+			{ID: "valid", Name: "Valid", Source: "remote", Lamport: 1, WallTime: stamp.Format(time.RFC3339Nano)},
+			{ID: "invalid", Name: "Invalid", Source: "remote", Lamport: 2, WallTime: "not-a-time"},
+		},
+		HighWater: 2,
+	}
+
+	local := NewPoset()
+	result, err := local.MergeSnapshot(snapshot)
+	if !errors.Is(err, ErrInvalidSnapshotMerge) {
+		t.Fatalf("MergeSnapshot error = %v, want ErrInvalidSnapshotMerge", err)
+	}
+	if result.EventsAdded != 1 || result.EventsSkipped != 1 {
+		t.Fatalf("MergeResult = %+v, want one added and one skipped event", result)
+	}
+	if _, ok := local.Event("valid"); !ok {
+		t.Fatal("valid event was not retained in the explicit partial result")
+	}
+	if _, ok := local.Event("invalid"); ok {
+		t.Fatal("invalid wall time was repaired and admitted")
+	}
+	if !strings.Contains(err.Error(), `event[1] "invalid": invalid wall_time "not-a-time"`) {
+		t.Fatalf("diagnostic lacks stable event/timestamp context: %v", err)
+	}
+
+	second := NewPoset()
+	_, secondErr := second.MergeSnapshot(snapshot)
+	if secondErr == nil || secondErr.Error() != err.Error() {
+		t.Fatalf("repeated malformed merge diagnostic changed:\nfirst:  %v\nsecond: %v", err, secondErr)
+	}
+}
+
+func TestMergeSnapshotRejectsConflictingExistingEvent(t *testing.T) {
+	stamp := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	local := NewPoset()
+	existing := &Event{ID: "same", Name: "Original", Source: "source", Params: map[string]any{"value": 1}, Clock: ClockStamp{WallTime: stamp}}
+	if err := local.AddEvent(existing); err != nil {
+		t.Fatalf("AddEvent: %v", err)
+	}
+	snapshot := &Snapshot{
+		NodeID: "remote",
+		Events: []EventExport{{
+			ID: "same", Name: "Conflicting", Source: "source", Params: map[string]any{"value": 1},
+			Lamport: 1, WallTime: stamp.Format(time.RFC3339Nano),
+		}},
+		HighWater: 1,
+	}
+
+	result, err := local.MergeSnapshot(snapshot)
+	if !errors.Is(err, ErrInvalidSnapshotMerge) {
+		t.Fatalf("MergeSnapshot error = %v, want ErrInvalidSnapshotMerge", err)
+	}
+	if result.EventsAdded != 0 || result.EventsSkipped != 1 {
+		t.Fatalf("MergeResult = %+v, want conflicting occurrence skipped", result)
+	}
+	got, ok := local.Event("same")
+	if !ok || got.Name != "Original" {
+		t.Fatalf("conflicting first-arrival content changed local event: %+v", got)
+	}
+	if !strings.Contains(err.Error(), `existing event name "Original" conflicts with snapshot name "Conflicting"`) {
+		t.Fatalf("conflict diagnostic lacks exact field values: %v", err)
+	}
+}
+
+func TestMergeSnapshotRejectsDuplicateIDsWithinSnapshot(t *testing.T) {
+	stamp := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	snapshot := &Snapshot{
+		NodeID: "remote",
+		Events: []EventExport{
+			{ID: "duplicate", Name: "A", Source: "remote", Lamport: 1, WallTime: stamp},
+			{ID: "duplicate", Name: "B", Source: "remote", Lamport: 2, WallTime: stamp},
+		},
+		HighWater: 2,
+	}
+
+	local := NewPoset()
+	result, err := local.MergeSnapshot(snapshot)
+	if !errors.Is(err, ErrInvalidSnapshotMerge) {
+		t.Fatalf("MergeSnapshot error = %v, want ErrInvalidSnapshotMerge", err)
+	}
+	if result.EventsSkipped != 2 || local.Len() != 0 {
+		t.Fatalf("duplicate snapshot IDs were partially admitted: result=%+v len=%d", result, local.Len())
+	}
+	if !strings.Contains(err.Error(), `event ID occurs 2 times in one snapshot`) {
+		t.Fatalf("duplicate diagnostic missing: %v", err)
+	}
+}
+
+func TestMergeSnapshotAggregatesMalformedAndCyclicEdges(t *testing.T) {
+	stamp := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	snapshot := &Snapshot{
+		NodeID: "remote",
+		Events: []EventExport{
+			{ID: "A", Name: "A", Source: "remote", Lamport: 1, WallTime: stamp},
+			{ID: "B", Name: "B", Source: "remote", Lamport: 1, WallTime: stamp},
+		},
+		CausalEdges: [][]string{{"A"}, {"A", "A"}, {"A", "B"}, {"A", "B"}},
+		HighWater:   1,
+	}
+
+	local := NewPoset()
+	result, err := local.MergeSnapshot(snapshot)
+	if !errors.Is(err, ErrInvalidSnapshotMerge) || !errors.Is(err, ErrSelfCausal) {
+		t.Fatalf("MergeSnapshot error = %v, want aggregate invalid-snapshot and self-causal errors", err)
+	}
+	if result.EventsAdded != 2 || result.EdgesAdded != 1 || result.EdgesSkipped != 3 {
+		t.Fatalf("MergeResult = %+v, want two events, one edge, and three skipped edges", result)
+	}
+	if !local.IsCausallyBefore("A", "B") {
+		t.Fatal("valid edge was not retained in the explicit partial result")
+	}
+	mergeErr, ok := err.(*SnapshotMergeError)
+	if !ok || len(mergeErr.Issues) != 2 {
+		t.Fatalf("aggregate issues = %#v, want two stable issues", mergeErr)
+	}
+}
+
+func TestSnapshotAndPresentationOrderUseEventIDTieBreak(t *testing.T) {
+	stamp := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	local := NewPoset()
+	if _, err := local.MergeSnapshot(&Snapshot{
+		NodeID: "remote",
+		Events: []EventExport{
+			{ID: "B", Name: "B", Source: "remote", Lamport: 1, WallTime: stamp},
+			{ID: "A", Name: "A", Source: "remote", Lamport: 1, WallTime: stamp},
+		},
+		HighWater: 1,
+	}); err != nil {
+		t.Fatalf("MergeSnapshot: %v", err)
+	}
+
+	full := local.CreateSnapshot("local")
+	if got := []string{full.Events[0].ID, full.Events[1].ID}; got[0] != "A" || got[1] != "B" {
+		t.Fatalf("CreateSnapshot event order = %v, want [A B]", got)
+	}
+	incremental := local.CreateIncrementalSnapshot("local", 1)
+	if got := []string{incremental.Events[0].ID, incremental.Events[1].ID}; got[0] != "A" || got[1] != "B" {
+		t.Fatalf("CreateIncrementalSnapshot event order = %v, want [A B]", got)
+	}
+	encoded, err := json.Marshal(local)
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	var exported PosetExport
+	if err := json.Unmarshal(encoded, &exported); err != nil {
+		t.Fatalf("decode PosetExport: %v", err)
+	}
+	if got := []string{exported.Events[0].ID, exported.Events[1].ID}; got[0] != "A" || got[1] != "B" {
+		t.Fatalf("MarshalJSON event order = %v, want [A B]", got)
+	}
+	if dot := local.DOT(); strings.Index(dot, `"A" [`) > strings.Index(dot, `"B" [`) {
+		t.Fatalf("DOT event order lacks EventID tie-break:\n%s", dot)
+	}
+}
+
+func TestCreateSnapshotOwnsExportedParameters(t *testing.T) {
+	local := NewPoset()
+	event := &Event{
+		ID: "owned", Name: "Owned", Source: "local",
+		Params: map[string]any{"value": int64(1), "nested": map[string]any{"key": "original"}},
+		Clock:  ClockStamp{WallTime: time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)},
+	}
+	if err := local.AddEvent(event); err != nil {
+		t.Fatalf("AddEvent: %v", err)
+	}
+	snapshot := local.CreateSnapshot("local")
+	snapshot.Events[0].Params["value"] = int64(2)
+	snapshot.Events[0].Params["nested"].(map[string]any)["key"] = "mutated"
+
+	stored, ok := local.Event("owned")
+	if !ok {
+		t.Fatal("stored event is missing")
+	}
+	if stored.Params["value"] != int64(1) || stored.Params["nested"].(map[string]any)["key"] != "original" {
+		t.Fatalf("snapshot parameter mutation escaped into the poset: %#v", stored.Params)
+	}
+}
+
+func TestMergeSnapshotDiagnosticsAndPartialResultIgnoreInputOrder(t *testing.T) {
+	stamp := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	events := []EventExport{
+		{ID: "C", Name: "C", Source: "remote", Lamport: 1, WallTime: stamp},
+		{ID: "invalid", Name: "Invalid", Source: "remote", Lamport: 2, WallTime: "bad-time"},
+		{ID: "A", Name: "A", Source: "remote", Lamport: 1, WallTime: stamp},
+	}
+	edges := [][]string{{"A", "C"}, {"A"}, {"A", "C"}}
+	leftSnapshot := &Snapshot{NodeID: "remote", Events: events, CausalEdges: edges, HighWater: 2}
+	rightSnapshot := &Snapshot{
+		NodeID:      "remote",
+		Events:      []EventExport{events[2], events[0], events[1]},
+		CausalEdges: [][]string{edges[2], edges[1], edges[0]},
+		HighWater:   2,
+	}
+
+	left := NewPoset()
+	leftResult, leftErr := left.MergeSnapshot(leftSnapshot)
+	right := NewPoset()
+	rightResult, rightErr := right.MergeSnapshot(rightSnapshot)
+	if leftErr == nil || rightErr == nil || leftErr.Error() != rightErr.Error() {
+		t.Fatalf("shuffled diagnostics differ:\nleft:  %v\nright: %v", leftErr, rightErr)
+	}
+	if !reflect.DeepEqual(leftResult, rightResult) {
+		t.Fatalf("shuffled partial results differ: left=%+v right=%+v", leftResult, rightResult)
+	}
+	leftCanonical, err := left.MarshalCanonical()
+	if err != nil {
+		t.Fatalf("left MarshalCanonical: %v", err)
+	}
+	rightCanonical, err := right.MarshalCanonical()
+	if err != nil {
+		t.Fatalf("right MarshalCanonical: %v", err)
+	}
+	if !bytes.Equal(leftCanonical, rightCanonical) {
+		t.Fatalf("shuffled partial computations differ:\nleft:  %s\nright: %s", leftCanonical, rightCanonical)
 	}
 }

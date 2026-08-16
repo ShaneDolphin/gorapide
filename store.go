@@ -29,6 +29,20 @@ type PosetQuerier interface {
 	TopologicalSort() []*Event
 }
 
+// CausalPreorderStore extends the historical strict-causality store without
+// changing that public interface for existing implementations.
+type CausalPreorderStore interface {
+	CausalStore
+	AddEquivalent(left, right EventID) error
+}
+
+// CausalPreorderQuerier extends the historical poset query surface with the
+// equivalence relation required by Rapide's causal preorder.
+type CausalPreorderQuerier interface {
+	PosetQuerier
+	IsCausallyEquivalent(a, b EventID) bool
+}
+
 // PosetReadWriter combines event storage, causal storage, and query
 // capabilities into a single interface representing a full poset.
 type PosetReadWriter interface {
@@ -41,8 +55,17 @@ type PosetReadWriter interface {
 	DOT() string
 }
 
+// CausalPreorderReadWriter is the complete read/write surface for Rapide
+// computations that may contain nontrivial causal-equivalence classes.
+type CausalPreorderReadWriter interface {
+	PosetReadWriter
+	CausalPreorderStore
+	CausalPreorderQuerier
+}
+
 // Compile-time assertion that *Poset satisfies PosetReadWriter.
 var _ PosetReadWriter = (*Poset)(nil)
+var _ CausalPreorderReadWriter = (*Poset)(nil)
 
 // Compile-time assertions that arch.Map satisfies MapTarget
 // and arch.BindingManager satisfies BindingTarget are in the arch package
@@ -81,14 +104,19 @@ func (p *Poset) AddEdge(from, to EventID) error {
 	return p.AddCausal(from, to)
 }
 
+// AddEquivalent implements CausalStore. It delegates to
+// AddCausalEquivalent.
+func (p *Poset) AddEquivalent(left, right EventID) error {
+	return p.AddCausalEquivalent(left, right)
+}
+
 // DirectPredecessors implements CausalStore. Returns the EventIDs of
 // immediate causal predecessors.
 func (p *Poset) DirectPredecessors(id EventID) []EventID {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	preds := make([]EventID, 0, len(p.reverseCausal[id]))
-	for pred := range p.reverseCausal[id] {
-		preds = append(preds, pred)
+	causes := p.DirectCauses(id)
+	preds := make([]EventID, len(causes))
+	for index, cause := range causes {
+		preds[index] = cause.ID
 	}
 	return preds
 }
@@ -96,11 +124,10 @@ func (p *Poset) DirectPredecessors(id EventID) []EventID {
 // DirectSuccessors implements CausalStore. Returns the EventIDs of
 // immediate causal successors.
 func (p *Poset) DirectSuccessors(id EventID) []EventID {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	succs := make([]EventID, 0, len(p.causalEdges[id]))
-	for succ := range p.causalEdges[id] {
-		succs = append(succs, succ)
+	effects := p.DirectEffects(id)
+	succs := make([]EventID, len(effects))
+	for index, effect := range effects {
+		succs[index] = effect.ID
 	}
 	return succs
 }

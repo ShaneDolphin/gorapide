@@ -59,6 +59,9 @@ func Seq(patterns ...Pattern) Pattern {
 }
 
 func (sp *seqPattern) Match(p PosetReader) []gorapide.EventSet {
+	if matches, ok := projectedBindingMatches(sp, p); ok {
+		return matches
+	}
 	leftMatches := sp.subs[0].Match(p)
 	rightMatches := sp.subs[1].Match(p)
 	results := make([]gorapide.EventSet, 0)
@@ -114,6 +117,9 @@ func ImmSeq(p1, p2 Pattern) Pattern {
 }
 
 func (ip *immSeqPattern) Match(p PosetReader) []gorapide.EventSet {
+	if matches, ok := projectedBindingMatches(ip, p); ok {
+		return matches
+	}
 	leftMatches := ip.p1.Match(p)
 	rightMatches := ip.p2.Match(p)
 	allEvents := p.All()
@@ -246,6 +252,9 @@ func Independent(p1, p2 Pattern) Pattern {
 }
 
 func (ip *independentPattern) Match(p PosetReader) []gorapide.EventSet {
+	if matches, ok := projectedBindingMatches(ip, p); ok {
+		return matches
+	}
 	leftMatches := ip.p1.Match(p)
 	rightMatches := ip.p2.Match(p)
 	results := make([]gorapide.EventSet, 0)
@@ -298,6 +307,9 @@ func Or(patterns ...Pattern) Pattern {
 type idKey string
 
 func (op *orPattern) Match(p PosetReader) []gorapide.EventSet {
+	if matches, ok := projectedBindingMatches(op, p); ok {
+		return matches
+	}
 	// Collect all matches, dedup by the set of event IDs in each match.
 	seen := make(map[idKey]bool)
 	results := make([]gorapide.EventSet, 0)
@@ -318,7 +330,8 @@ func (op *orPattern) Match(p PosetReader) []gorapide.EventSet {
 func eventSetKey(es gorapide.EventSet) idKey {
 	ids := make([]string, len(es))
 	for i, e := range es {
-		ids[i] = string(e.ID)
+		id := string(e.ID)
+		ids[i] = fmt.Sprintf("%d:%s", len(id), id)
 	}
 	// Sort for canonical ordering.
 	sortStrings(ids)
@@ -360,6 +373,9 @@ func And(patterns ...Pattern) Pattern {
 }
 
 func (ap *andPattern) Match(p PosetReader) []gorapide.EventSet {
+	if matches, ok := projectedBindingMatches(ap, p); ok {
+		return matches
+	}
 	if len(ap.subs) == 0 {
 		return nil
 	}
@@ -415,6 +431,9 @@ func Union(p1, p2 Pattern) Pattern {
 }
 
 func (up *unionPattern) Match(p PosetReader) []gorapide.EventSet {
+	if matches, ok := projectedBindingMatches(up, p); ok {
+		return matches
+	}
 	leftMatches := up.p1.Match(p)
 	rightMatches := up.p2.Match(p)
 	results := make([]gorapide.EventSet, 0, len(leftMatches)*len(rightMatches))
@@ -429,6 +448,59 @@ func (up *unionPattern) Match(p PosetReader) []gorapide.EventSet {
 
 func (up *unionPattern) String() string {
 	return fmt.Sprintf("Union(%s, %s)", up.p1.String(), up.p2.String())
+}
+
+// --- Disjoint conjunction pattern (P1 ~ P2) ---
+
+// disjointPattern matches two subcomputations that share no event occurrence.
+type disjointPattern struct {
+	p1, p2 Pattern
+}
+
+// Disjoint creates the Rapide disjoint-conjunction pattern. It requires a
+// match for each operand and prohibits the two matches from sharing an event.
+func Disjoint(p1, p2 Pattern) Pattern {
+	if p1 == nil || p2 == nil {
+		panic("pattern.Disjoint: requires two non-nil sub-patterns")
+	}
+	return &disjointPattern{p1: p1, p2: p2}
+}
+
+func (dp *disjointPattern) Match(p PosetReader) []gorapide.EventSet {
+	if matches, ok := projectedBindingMatches(dp, p); ok {
+		return matches
+	}
+	leftMatches := dp.p1.Match(p)
+	rightMatches := dp.p2.Match(p)
+	results := make([]gorapide.EventSet, 0)
+	seen := make(map[idKey]bool)
+	for _, left := range leftMatches {
+		for _, right := range rightMatches {
+			if eventSetsDisjoint(left, right) {
+				merged := mergeEventSets(left, right)
+				key := eventSetKey(merged)
+				if !seen[key] {
+					seen[key] = true
+					results = append(results, merged)
+				}
+			}
+		}
+	}
+	return results
+}
+
+func eventSetsDisjoint(left, right gorapide.EventSet) bool {
+	leftIDs := eventIDSet(left)
+	for _, event := range right {
+		if leftIDs[event.ID] {
+			return false
+		}
+	}
+	return true
+}
+
+func (dp *disjointPattern) String() string {
+	return fmt.Sprintf("Disjoint(%s, %s)", dp.p1.String(), dp.p2.String())
 }
 
 // --- Iteration Pattern (for x in set op P) ---

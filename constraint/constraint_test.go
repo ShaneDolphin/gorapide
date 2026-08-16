@@ -1,6 +1,7 @@
 package constraint
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/ShaneDolphin/gorapide"
@@ -10,8 +11,41 @@ import (
 // --- ConstraintKind ---
 
 func TestConstraintKindConstants(t *testing.T) {
-	if MustMatch == MustNever {
-		t.Error("MustMatch and MustNever must be distinct")
+	if MustMatch == MustNotMatch || MustMatch == MustNever || MustNotMatch == MustNever {
+		t.Error("MustMatch, MustNotMatch, and MustNever must be distinct")
+	}
+}
+
+func TestMustNotMatchIsExactAndDistinctFromMustNever(t *testing.T) {
+	one := gorapide.Build().Event("X").MustDone()
+	two := gorapide.Build().Event("X").Event("X").MustDone()
+	negative := NewConstraint("negative").
+		MustNotMatch("not_exactly_one", pattern.MatchEvent("X"), "must not be exactly one X").
+		Build()
+	never := NewConstraint("never").
+		MustNever("no_x", pattern.MatchEvent("X"), "X must never occur").
+		Build()
+
+	violations, err := negative.CheckDeterministic(one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Kind != MustNotMatch || len(violations[0].MatchedEvents) != 1 {
+		t.Fatalf("negative exact-match violation=%#v", violations)
+	}
+	violations, err = negative.CheckDeterministic(two)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("negative exact match rejected a non-exact computation: %#v", violations)
+	}
+	violations, err = never.CheckDeterministic(two)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 2 {
+		t.Fatalf("never did not reject both contained occurrences: %#v", violations)
 	}
 }
 
@@ -343,6 +377,141 @@ func TestFilterScopingExcludesNonMatching(t *testing.T) {
 	violations := c.Check(p)
 	if len(violations) != 1 {
 		t.Fatalf("VulnFound from other source should not satisfy filter, want 1 violation, got %d", len(violations))
+	}
+}
+
+func TestFilterProjectionPreservesCausalityButHidesIntermediate(t *testing.T) {
+	p := gorapide.Build().
+		Event("VisibleStart", "visible", true).
+		Event("Hidden", "visible", false).CausedBy("VisibleStart").
+		Event("VisibleEnd", "visible", true).CausedBy("Hidden").
+		MustDone()
+
+	c := NewConstraint("visible_projection").
+		FilterBy(pattern.MatchAny().WhereParam("visible", true)).
+		Must("projected_immediate",
+			pattern.ImmSeq(pattern.MatchEvent("VisibleStart"), pattern.MatchEvent("VisibleEnd")),
+			"VisibleStart must immediately precede VisibleEnd in the projected poset").
+		MustNever("hidden_absent", pattern.MatchEvent("Hidden"), "Hidden must not be matchable").
+		Build()
+
+	if violations := c.Check(p); len(violations) != 0 {
+		t.Fatalf("projected constraint produced violations: %v", violations)
+	}
+}
+
+func TestMatchConstraintRequiresWholeAssociatedComputation(t *testing.T) {
+	p := gorapide.Build().Event("X").Event("X").MustDone()
+	c := NewConstraint("whole").
+		Must("exactly_described", pattern.MatchEvent("X"), "all X events must match").
+		Build()
+
+	violations, err := c.CheckDeterministic(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("existential subset incorrectly satisfied match constraint: %d violations", len(violations))
+	}
+}
+
+func TestMatchConstraintIgnoresUnassociatedEventsButRejectsExtraAssociatedEvent(t *testing.T) {
+	p := gorapide.Build().
+		Event("Start").
+		Event("End").CausedBy("Start").
+		Event("Unrelated").
+		MustDone()
+	c := NewConstraint("whole_sequence").
+		Must("sequence", pattern.Seq(pattern.MatchEvent("Start"), pattern.MatchEvent("End")), "exact sequence required").
+		Build()
+
+	violations, err := c.CheckDeterministic(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("unassociated event affected match constraint: %v", violations)
+	}
+
+	extraEnd := gorapide.NewEvent("End", "default", nil)
+	start := p.ByName("Start")[0]
+	if err := p.AddEventWithCause(extraEnd, start.ID); err != nil {
+		t.Fatal(err)
+	}
+	violations, err = c.CheckDeterministic(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("extra associated event did not violate exact match: %d violations", len(violations))
+	}
+}
+
+func TestCheckDeterministicRejectsOpaquePattern(t *testing.T) {
+	p := gorapide.Build().Event("X").MustDone()
+	c := NewConstraint("opaque").
+		Must("opaque", pattern.MatchEvent("X").Where(func(*gorapide.Event) bool { return true }), "unsupported").
+		Build()
+
+	_, err := c.CheckDeterministic(p)
+	if !errors.Is(err, ErrConstraintEvaluation) {
+		t.Fatalf("expected ErrConstraintEvaluation, got %v", err)
+	}
+	legacy := c.Check(p)
+	if len(legacy) != 1 || legacy[0].Clause != "evaluation" {
+		t.Fatalf("legacy Check did not expose evaluation failure: %#v", legacy)
+	}
+}
+
+func TestIteratedMatchConstraintRequiresAllEventsInCausalOrder(t *testing.T) {
+	ordered := gorapide.Build().
+		Event("WriteReturn").
+		Event("WriteReturn").CausedBy("WriteReturn").
+		Event("WriteReturn").CausedBy("WriteReturn").
+		MustDone()
+	constraint := NewConstraint("write_order").
+		Must("all_ordered", pattern.IterateZeroOrMore(pattern.MatchEvent("WriteReturn"), pattern.RelationFollows), "all write returns must be ordered").
+		Build()
+	violations, err := constraint.CheckDeterministic(ordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("ordered computation violated iterated match: %v", violations)
+	}
+
+	unordered := gorapide.Build().
+		Event("WriteReturn").
+		Event("WriteReturn").
+		Event("WriteReturn").
+		MustDone()
+	violations, err = constraint.CheckDeterministic(unordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("unordered computation produced %d violations, want 1", len(violations))
+	}
+}
+
+func TestDisjointRangeConstraintDetectsMissingAndDuplicateOccurrences(t *testing.T) {
+	constraint := NewConstraint("exactly_two_approvals").
+		Must("two", pattern.IterateRange(pattern.MatchEvent("Approval"), pattern.RelationDisjoint, 2, 2), "exactly two approvals required").
+		Build()
+	for count, wantViolations := range map[int]int{1: 1, 2: 0, 3: 1} {
+		poset := gorapide.NewPoset()
+		for i := 0; i < count; i++ {
+			if err := poset.AddEvent(gorapide.NewEvent("Approval", "reviewer", map[string]any{"index": i})); err != nil {
+				t.Fatal(err)
+			}
+		}
+		violations, err := constraint.CheckDeterministic(poset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(violations) != wantViolations {
+			t.Errorf("count %d: got %d violations, want %d", count, len(violations), wantViolations)
+		}
 	}
 }
 

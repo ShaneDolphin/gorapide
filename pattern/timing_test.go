@@ -290,7 +290,7 @@ func TestTimingPatternStrings(t *testing.T) {
 		contains string
 	}{
 		{During(MatchEvent("A"), ref, ref.Add(time.Hour)), "During("},
-		{Within(MatchEvent("A"), 5 * time.Second), "Within("},
+		{Within(MatchEvent("A"), 5*time.Second), "Within("},
 		{After(MatchEvent("A"), ref), "After("},
 		{Before(MatchEvent("A"), ref), "Before("},
 	}

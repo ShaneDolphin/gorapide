@@ -129,7 +129,7 @@ func TestPipeConnectionCreatesCausalEdge(t *testing.T) {
 	}
 }
 
-// --- BasicConnection: NO causal edge ---
+// --- BasicConnection: one event with two observations ---
 
 func TestBasicConnectionNoCausalEdge(t *testing.T) {
 	p := gorapide.NewPoset()
@@ -159,20 +159,30 @@ func TestBasicConnectionNoCausalEdge(t *testing.T) {
 	}
 	pong := pongs[0]
 
-	// Basic connection should NOT create a causal edge.
-	if p.IsCausallyBefore(trigger.ID, pong.ID) {
-		t.Error("basic connection should NOT create causal edge")
+	// Basic connection produces a target observation of the same occurrence.
+	if pong.ID != trigger.ID {
+		t.Errorf("basic connection should preserve event identity: want %s, got %s", trigger.ID, pong.ID)
+	}
+	if p.Len() != 1 {
+		t.Errorf("basic connection should not add an occurrence: want 1 event, got %d", p.Len())
 	}
 
-	// But both events should exist independently in the poset.
+	// An event cannot causally precede itself.
+	if p.IsCausallyBefore(trigger.ID, pong.ID) {
+		t.Error("basic connection identity must not create a self-causal edge")
+	}
+
+	if !pong.HasObservation("A", "Ping") || !pong.HasObservation("B", "Pong") {
+		t.Errorf("basic event observations: got %#v", pong.EventObservations())
+	}
 	if pong.Source != "B" {
 		t.Errorf("Source: want B, got %s", pong.Source)
 	}
 }
 
-// --- AgentConnection: same EventID ---
+// --- AgentConnection: generated event depends on trigger ---
 
-func TestAgentConnectionSameEventID(t *testing.T) {
+func TestAgentConnectionCreatesTriggerDependentOutput(t *testing.T) {
 	p := gorapide.NewPoset()
 	ifaceA := Interface("Sender").OutAction("Ping").Build()
 	ifaceB := Interface("Observer").InAction("Ping").Build()
@@ -195,15 +205,20 @@ func TestAgentConnectionSameEventID(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	// Agent connection should have sent the SAME event to B's inbox.
+	// Agent connection generates a target event caused by the trigger.
 	select {
 	case received := <-compB.inbox:
-		if received.ID != trigger.ID {
-			t.Errorf("agent connection should deliver same EventID: want %s, got %s",
-				trigger.ID, received.ID)
+		if received.ID == trigger.ID {
+			t.Errorf("agent connection should generate a distinct target event, got trigger ID %s", received.ID)
 		}
 		if received.ParamInt("val") != 42 {
 			t.Errorf("params should be preserved: want 42, got %d", received.ParamInt("val"))
+		}
+		if received.Source != "B" || received.Name != "Ping" {
+			t.Errorf("target observation: want B.Ping, got %s.%s", received.Source, received.Name)
+		}
+		if !p.IsCausallyBefore(trigger.ID, received.ID) {
+			t.Error("agent output must causally depend on its trigger")
 		}
 	default:
 		t.Fatal("agent connection should have sent event to target inbox")
