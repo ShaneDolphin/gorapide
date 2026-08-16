@@ -1,8 +1,10 @@
 # gorapide
 
-A Go implementation of Stanford Rapide 1.0 causal event-driven architecture semantics.
+A Go implementation of Stanford Rapide 1.0 causal event-driven architecture semantics — and, as of v0.2.0, a modernization of it that goes beyond the original Rapide roadmap.
 
 gorapide models software architectures as collections of concurrent components that communicate through partially ordered event sets (posets). Every event carries a causal history, enabling precise reasoning about happens-before relationships, constraint verification, architecture-level observability, and distributed synchronization.
+
+gorapide treats the original Stanford Rapide as its blueprint: the language semantics it implements are recovered from the published Rapide 1.0 reference manuals, and where the current subset is incomplete it fails explicitly rather than approximating. On top of that blueprint, v0.2.0 adds capabilities the original Rapide project never had on its roadmap — sealed deterministic execution with replayable evidence, content-derived event identity, canonical artifacts and digests, first-class causal preorders, explicit choice enumeration — together with modern context and tooling: a Go-native API, CRDT-based distributed synchronization, OpenTelemetry export, and a visual architecture editor. See [Heritage and beyond](#heritage) for the full picture.
 
 ## Installation
 
@@ -912,6 +914,26 @@ gorapide implements the semantics described in the Stanford Rapide 1.0 language 
 - **Distributed synchronization** — vector clocks, CRDT-based poset merge, transport abstraction
 
 The original Rapide language was developed at Stanford University by David Luckham's research group for architecture-level modeling and simulation of concurrent systems.
+
+### Beyond the original roadmap
+
+The Stanford Rapide project defined the language and shipped a research toolset; it never aimed at reproducible, audit-grade execution. Version 0.2.0 keeps Rapide 1.0 as the semantic blueprint — language-level fidelity is tracked decision-by-decision in [`docs/SEMANTIC_DECISIONS.md`](docs/SEMANTIC_DECISIONS.md), and unsupported forms are gated explicitly, never silently reinterpreted — while adding primitives the original roadmap did not contemplate:
+
+- **Sealed deterministic execution** — models are validated and deep-copied into immutable snapshots; execution is a single-threaded logical worklist with no goroutines, wall clock, or randomness in trusted semantics
+- **Replayable evidence** — canonical execution journals, artifacts, and SHA-256 digests make every computation independently reproducible and comparable
+- **Content-derived identity** — event, module, connection, and type identities are derived from semantic content, not ambient randomness
+- **Causal preorders as first-class structure** — distinct causally-equivalent occurrences are represented without collapsing audit identity
+- **Explicit choice enumeration** — where Rapide admits several computations, alternatives carry stable identities that can be selected, replayed, or exhaustively explored under declared bounds
+- **Modern context and tools** — a Go-native construction API alongside the Rapide source compiler, CRDT snapshot synchronization for distributed posets, OpenTelemetry trace export, and a browser-based visual editor
+
+These additions extend what the Rapide blueprint can do without forking what it means: the deterministic engine executes the same admitted models the language defines, and improvements live in the engine and tooling layer, not in silent changes to language semantics.
+
+## Authors
+
+- **Shane Morris**
+- **Jace Randolph**
+
+Built on the Rapide language research of David Luckham's group at Stanford University.
 
 ## License
 
