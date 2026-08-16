@@ -1,7 +1,6 @@
 package arch
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -268,7 +267,13 @@ func choiceScheduleKey(schedule []ChoiceDecision) (string, error) {
 }
 
 func choiceScheduleLess(left, right []ChoiceDecision) bool {
-	leftEncoded, _ := json.Marshal(left)
-	rightEncoded, _ := json.Marshal(right)
-	return bytes.Compare(leftEncoded, rightEncoded) < 0
+	for i := 0; i < len(left) && i < len(right); i++ {
+		if left[i].Point != right[i].Point {
+			return left[i].Point < right[i].Point
+		}
+		if left[i].Selection != right[i].Selection {
+			return left[i].Selection < right[i].Selection
+		}
+	}
+	return len(left) < len(right)
 }
