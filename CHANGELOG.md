@@ -47,13 +47,33 @@ from the deterministic guarantee.
   only).
 - `Event` and `PosetStats` gained exported fields; positional struct
   literals must become keyed literals.
+- **Constraint checking is stricter and value-aware.** `Must`/`MustMatch`
+  clauses now require the pattern to match the whole associated
+  computation rather than existentially (a poset with two `X` events now
+  violates `Must(MatchEvent("X"))`); constraints containing opaque Go
+  predicates (`Where(func...)`) are rejected with an `evaluation`
+  violation instead of silently evaluated; `ConstraintKind` values were
+  renumbered (`MustNotMatch` inserted; `MustNever` moved) — never
+  persist or compare the numeric values. `ConstraintViolation` also
+  gained mid-struct fields (`Bindings`, `StateWitnesses`) — use keyed
+  literals.
+- **`arch.Connection` must be built via `Connect(...).Build()`.** The
+  struct gained exported fields, an internal mutex (no longer copyable),
+  and unexported state initialized by `Build()`; direct struct literals
+  from v0.1.0 code are no longer supported.
+- **`pattern.WhereParam` compares canonical values**, not Go `==`:
+  integer widths now compare equal (e.g. `int64(1)` matches
+  `WhereParam("n", 1)`), where v0.1.0 required exact type identity.
 
 ### Deprecated
 - `NewEvent`, `NewEventID` (random identity), callback behaviors
   (`OnReceive`/`OnEvent`), `Architecture.Start` async runtime,
   dynamic `Binding`, `SubArchitecture`, `dsync.Coordinator`. All still
   work; none are covered by the deterministic guarantee, and all are
-  rejected by `PrepareDeterministic`.
+  rejected by `PrepareDeterministic`. Legacy callback behaviors now
+  apply Rapide consumption semantics: a rule fires at most once per
+  consumed event set, so overlapping matches sharing an event no longer
+  both fire.
 
 ### Evidence
 - Semantic decision ledger (332 entries): `docs/SEMANTIC_DECISIONS.md`

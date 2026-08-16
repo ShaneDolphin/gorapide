@@ -62,7 +62,6 @@ type MemTransport struct {
 }
 
 // Send delivers a snapshot to the target node's inbox channel.
-
 func (t *MemTransport) Send(ctx context.Context, target gorapide.NodeID, snap *gorapide.Snapshot) error {
 	if t == nil || t.network == nil {
 		return fmt.Errorf("dsync: sender transport or network is nil")

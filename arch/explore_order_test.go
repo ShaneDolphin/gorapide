@@ -17,4 +17,10 @@ func TestChoiceScheduleLessOrdersFieldwise(t *testing.T) {
 	if choiceScheduleLess(a, a) {
 		t.Fatal("equal schedules must not compare less")
 	}
+
+	pointBeforeSelection := []ChoiceDecision{{Point: "p1", Selection: "b"}}
+	laterPoint := []ChoiceDecision{{Point: "p2", Selection: "a"}}
+	if !choiceScheduleLess(pointBeforeSelection, laterPoint) || choiceScheduleLess(laterPoint, pointBeforeSelection) {
+		t.Fatal("Point must be compared before Selection")
+	}
 }

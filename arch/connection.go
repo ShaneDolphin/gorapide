@@ -96,6 +96,9 @@ func (conn *Connection) execute(triggerEvent *gorapide.Event, source, target *Co
 		return nil, err
 	}
 	if conn.Kind == PipeConnection {
+		if conn.previousOutput == nil {
+			conn.previousOutput = make(map[string]gorapide.EventID)
+		}
 		conn.previousOutput[target.ID] = nextPrevious
 	}
 	if err := target.SendChecked(event); err != nil {

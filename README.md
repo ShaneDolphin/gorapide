@@ -890,7 +890,7 @@ Five-component ATO security scanning pipeline demonstrating interface definition
 ## Running Tests
 
 ```bash
-# Deterministic core module (1,899 tests across 9 packages)
+# Deterministic core module (1,889 tests across 9 packages)
 go test -race ./...
 
 # OTel export sub-module
