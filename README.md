@@ -18,11 +18,9 @@ Requires Go 1.22 or later. The core module has **zero external dependencies**.
 
 GoRapide is undergoing a source-grounded recovery of Stanford Rapide 1.0. It is
 not yet a complete Rapide 1.0 implementation. The supported compatibility profile,
-known gaps, and executable evidence are tracked in:
-
-- [`docs/RAPIDE_COMPATIBILITY_PROFILE.md`](docs/RAPIDE_COMPATIBILITY_PROFILE.md)
-- [`docs/RAPIDE_FEATURE_MATRIX.md`](docs/RAPIDE_FEATURE_MATRIX.md)
-- [`docs/CONFORMANCE_TESTS.md`](docs/CONFORMANCE_TESTS.md)
+known gaps, and executable evidence are tracked in the project's engineering
+documentation (compatibility profile, feature matrix, and conformance index),
+maintained by the authors alongside the source.
 
 `arch.Architecture.PrepareDeterministic` seals the currently supported subset
 into a deeply owned `PreparedArchitecture`. The snapshot retains exact
@@ -57,16 +55,13 @@ The public boundary is classified as follows:
 | `NewEvent`, `Start`, inbox delivery, callback behavior/`Map`, dynamic `Binding`, goroutine `SubArchitecture`, live `Checker`, and `dsync.Coordinator` | legacy asynchronous or integration | Compatibility only; rejected or isolated from deterministic execution |
 | Ordinary JSON, DOT/Mermaid, Studio, trace, and telemetry export | presentation/integration | Inspection and adapters; never semantic identity |
 
-See [`docs/DETERMINISTIC_TRUST_BOUNDARY_AUDIT.md`](docs/DETERMINISTIC_TRUST_BOUNDARY_AUDIT.md)
-for the reachability evidence and closure plan. C1.2 closes executable model
-ownership with immutable prepared architecture and map snapshots; its
-[design](docs/C1_2_SEALED_MODEL_DESIGN.md) and
-[verification evidence](docs/C1_2_SEALED_MODEL_EVIDENCE.md) are recorded
-separately. C1.3 closes the inventoried silent delivery and ignored-error paths
-in legacy architecture, hierarchy, binding, snapshot merge, and distributed
-synchronization; its [contract](docs/C1_3_LOSS_ERROR_CONTRACT.md) and
-[verification evidence](docs/C1_3_LOSS_ERROR_EVIDENCE.md) are recorded
-separately. Phase 1 is not complete until the remaining supported
+Reachability evidence and the closure plan are recorded in the project's
+trust-boundary audit. C1.2 closes executable model ownership with immutable
+prepared architecture and map snapshots; C1.3 closes the inventoried silent
+delivery and ignored-error paths in legacy architecture, hierarchy, binding,
+snapshot merge, and distributed synchronization. The design, contract, and
+verification evidence for each are recorded in the engineering documentation
+maintained by the authors. Phase 1 is not complete until the remaining supported
 race/cross-platform qualification matrix passes.
 
 The current source-expression milestone includes canonical direct predefined-
@@ -113,7 +108,7 @@ func main() {
 }
 ```
 
-See [docs/DETERMINISTIC_EXECUTION.md](docs/DETERMINISTIC_EXECUTION.md) for the complete deterministic execution walkthrough.
+A complete deterministic execution walkthrough (prepared snapshots, journals, replay, exploration, and canonical artifacts) is maintained in the project's engineering documentation.
 
 ## Package Structure
 
@@ -917,7 +912,7 @@ The original Rapide language was developed at Stanford University by David Luckh
 
 ### Beyond the original roadmap
 
-The Stanford Rapide project defined the language and shipped a research toolset; it never aimed at reproducible, audit-grade execution. Version 0.2.0 keeps Rapide 1.0 as the semantic blueprint — language-level fidelity is tracked decision-by-decision in [`docs/SEMANTIC_DECISIONS.md`](docs/SEMANTIC_DECISIONS.md), and unsupported forms are gated explicitly, never silently reinterpreted — while adding primitives the original roadmap did not contemplate:
+The Stanford Rapide project defined the language and shipped a research toolset; it never aimed at reproducible, audit-grade execution. Version 0.2.0 keeps Rapide 1.0 as the semantic blueprint — language-level fidelity is tracked decision-by-decision in a semantic decision ledger maintained by the authors, and unsupported forms are gated explicitly, never silently reinterpreted — while adding primitives the original roadmap did not contemplate:
 
 - **Sealed deterministic execution** — models are validated and deep-copied into immutable snapshots; execution is a single-threaded logical worklist with no goroutines, wall clock, or randomness in trusted semantics
 - **Replayable evidence** — canonical execution journals, artifacts, and SHA-256 digests make every computation independently reproducible and comparable
