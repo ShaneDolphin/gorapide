@@ -6,9 +6,9 @@ import (
 
 // Compile-time interface satisfaction checks.
 var (
-	_ EventStore     = (*Poset)(nil)
-	_ CausalStore    = (*Poset)(nil)
-	_ PosetQuerier   = (*Poset)(nil)
+	_ EventStore      = (*Poset)(nil)
+	_ CausalStore     = (*Poset)(nil)
+	_ PosetQuerier    = (*Poset)(nil)
 	_ PosetReadWriter = (*Poset)(nil)
 )
 

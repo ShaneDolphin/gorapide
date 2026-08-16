@@ -240,7 +240,7 @@ func CausalDepthMax(maxDepth int) *PredicateConstraint {
 // ConstraintSet aggregates multiple constraints (both pattern-based and
 // predicate-based) and evaluates them together.
 type ConstraintSet struct {
-	Name    string
+	Name     string
 	checkers []Checkable
 }
 
