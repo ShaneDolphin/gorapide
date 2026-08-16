@@ -10472,11 +10472,9 @@ func (current *sourceTypeElaborator) elaborateServiceConnection(
 		result = append(result, basicGeneratedConnection(source.Position, source.Guard,
 			fromComponent, fromAction, toComponent, toAction, ConnectionActionConstituent))
 	}
-	for name := range rightActions {
-		if _, exists := leftActions[name]; !exists {
-			return nil, typeError(source.Position,
-				"dual service connection action %q exists only in the target service", name)
-		}
+	if missing := sortedMissingNames(leftActions, rightActions); len(missing) > 0 {
+		return nil, typeError(source.Position,
+			"dual service connection action %q exists only in the target service", missing[0])
 	}
 
 	leftFunctions := groupFunctionsByName(leftExpansion.functions)
@@ -10518,11 +10516,9 @@ func (current *sourceTypeElaborator) elaborateServiceConnection(
 				"dual service connection function %q does not produce complementary requires/provides regions", name)
 		}
 	}
-	for name := range rightFunctions {
-		if _, exists := leftFunctions[name]; !exists {
-			return nil, typeError(source.Position,
-				"dual service connection function %q exists only in the target service", name)
-		}
+	if missing := sortedMissingNames(leftFunctions, rightFunctions); len(missing) > 0 {
+		return nil, typeError(source.Position,
+			"dual service connection function %q exists only in the target service", missing[0])
 	}
 	return result, nil
 }
@@ -11123,4 +11119,17 @@ func folded(value string) string {
 
 func typeError(position Position, format string, arguments ...any) error {
 	return &TypeError{Position: position, Message: fmt.Sprintf(format, arguments...)}
+}
+
+// sortedMissingNames returns, in lexicographic order, the keys of right that
+// are absent from left, so diagnostics never depend on map iteration order.
+func sortedMissingNames[L, R any](left map[string]L, right map[string]R) []string {
+	var missing []string
+	for name := range right {
+		if _, exists := left[name]; !exists {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
