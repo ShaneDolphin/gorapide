@@ -84,6 +84,32 @@ func (e *Event) EventObservations() []EventObservation {
 	return observations
 }
 
+// observationsNamed reports the qualified observations of e whose Name
+// equals name, applying the exact same membership test as
+// EventObservations (including the synthesized {e.Name, e.Source, e.Params}
+// self-observation fallback for events with no explicit Observations) but
+// without copying any Params map or sorting. The returned entries alias e's
+// stored Params/Observations maps and are for read-only membership testing
+// only: callers that need an isolated, caller-owned result (e.g. to return
+// to code outside the poset) must still build one explicitly, such as via
+// eventView. This exists solely to let EventsByName test names cheaply
+// without paying for a copy-and-sort of every scanned event, match or not.
+func (e *Event) observationsNamed(name string) []EventObservation {
+	if len(e.Observations) == 0 {
+		if e.Name != name {
+			return nil
+		}
+		return []EventObservation{{Name: e.Name, Source: e.Source, Params: e.Params}}
+	}
+	var matches []EventObservation
+	for _, observation := range e.Observations {
+		if observation.Name == name {
+			matches = append(matches, observation)
+		}
+	}
+	return matches
+}
+
 // ObservationViews returns one isolated active event view for every qualified
 // role of this occurrence, in canonical order. All views retain the same event
 // identity and causal relationships.
@@ -110,12 +136,23 @@ func (e *Event) HasObservation(source, name string) bool {
 	return false
 }
 
+// eventView builds an isolated, defensively-copied view of e with the given
+// observation active. It intentionally does not call cloneEvent: cloneEvent
+// unconditionally deep-copies e.Params and e.Observations, both of which
+// eventView immediately overwrites, so routing through it would compute and
+// discard a full Params/Observations copy on every call. Every field set
+// here mirrors what cloneEvent would have produced, minus that dead work.
 func eventView(e *Event, observation EventObservation) *Event {
-	view := *cloneEvent(e)
+	view := *e
 	view.Name = observation.Name
 	view.Source = observation.Source
 	view.Params = copyParams(observation.Params)
 	view.Observations = copyObservations(e.Observations)
+	view.Timings = append([]EventTiming(nil), e.Timings...)
+	view.expectedCauses = append([]EventID(nil), e.expectedCauses...)
+	if e.Clock.Vector != nil {
+		view.Clock.Vector = e.Clock.Vector.Clone()
+	}
 	return &view
 }
 

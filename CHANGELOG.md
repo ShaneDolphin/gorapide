@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.2.3 — 2026-08-18
+
+Performance fix: `EventsByName` (and the general observation-view path it
+shares with `ObservationViews`/`AddObservationWithTimings`) was rewritten in
+v0.2.0 to test observation names by first cloning and sorting every
+observation of every scanned event, matching or not, and then, for each
+match, building the returned view through a general-purpose clone helper
+that computed a full `Params`/`Observations` copy it immediately discarded
+and recomputed. Both costs scale with poset size and are paid on every call,
+so this is a hot-path regression for any workload (pattern matching, rule
+evaluation, constraint checking) that queries a poset by event name
+repeatedly as it grows.
+
+### Fixed
+- `eventView` no longer routes through `cloneEvent`, which unconditionally
+  deep-copies `Params` and `Observations` before `eventView` overwrote both
+  fields with different values a line later. It now builds the view
+  directly, copying `Timings`, `expectedCauses`, and `Clock.Vector` (the
+  parts of `cloneEvent` that survive unmodified into the final view) once,
+  and copying `observation.Params` into `Params` and the event's stored
+  observations into `Observations` exactly once each. `cloneEvent` itself,
+  and every other caller of it, is unchanged.
+- `EventsByName` no longer calls `EventObservations()` (a full
+  deep-copy-and-sort of every event's observations) just to test a name.
+  A new unexported `(*Event).observationsNamed` scans the event's stored
+  observations directly, with the same fallback to the synthesized
+  `{Name, Source, Params}` self-observation for events with no explicit
+  `Observations`, and does no copying or sorting — only entries that
+  actually match a name reach `eventView`, which builds the caller-owned
+  deep clone. `EventsByName`'s final result is still passed through the
+  same `sortEventSet`, so output ordering is unchanged.
+- Observable behavior is unchanged: same `(event, observation)` pairs
+  matched, same values, same deterministic sort order, same
+  defensive-copy guarantee on returned events. Pinned by
+  `TestEventsByNameContract`, written against and verified to pass
+  unmodified on v0.2.2 before the fix, and re-verified after.
+
+### Performance
+`BenchmarkEventsByName` (5,000-event poset, 20 distinct names cycling,
+querying a name with 250 matches, Apple M3, no `-race`):
+- Before (v0.2.2, commit 95d623b): ~1.61ms–1.75ms per call,
+  ~2.50MB/op, 23,261 allocs/op.
+- After (this fix): ~248µs–293µs per call, ~248.5KB/op, 2,011 allocs/op.
+- Roughly 6x faster per call, and about 10x fewer bytes allocated and
+  11.6x fewer allocations, with identical query results.
+
 ## v0.2.2 — 2026-08-18
 
 Performance fix: v0.2.0's timing-closure validation on the two causal-insert

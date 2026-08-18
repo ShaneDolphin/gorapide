@@ -775,3 +775,41 @@ func BenchmarkLinearChainInsertUntimed(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkEventsByName measures the per-call cost of EventsByName against a
+// poset of a few thousand mixed-name events, the hot path identified in
+// perf-investigation-report.md (PredicateConstraint.Check -> BasicPattern.Match
+// -> Poset.ByName -> Poset.EventsByName, ~58% of profiled CPU under
+// BenchmarkSustainedThroughput). Events cycle through 20 distinct names so
+// most of the scan is spent on non-matches, mirroring a rule pack that
+// queries one event type per insert against a poset containing many others.
+func BenchmarkEventsByName(b *testing.B) {
+	const eventCount = 5000
+	const nameCount = 20
+	poset := NewPoset()
+	var causes []EventID
+	for index := 0; index < eventCount; index++ {
+		name := "Kind" + strconv.Itoa(index%nameCount)
+		event, err := NewDeterministicEvent(EventProvenance{
+			Profile: "benchmark-profile", Model: "benchmark-model",
+			Instance: "component", Action: name,
+			Occurrence: strconv.Itoa(index), Causes: causes,
+		}, map[string]any{"index": int64(index)})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := poset.AddEventWithCause(event, causes...); err != nil {
+			b.Fatal(err)
+		}
+		causes = []EventID{event.ID}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for iteration := 0; iteration < b.N; iteration++ {
+		set := poset.EventsByName("Kind7")
+		if len(set) != eventCount/nameCount {
+			b.Fatalf("EventsByName(Kind7): got %d results, want %d", len(set), eventCount/nameCount)
+		}
+	}
+}

@@ -381,16 +381,21 @@ func (p *Poset) Events() EventSet {
 	return set
 }
 
-// EventsByName returns all events with the given name.
+// EventsByName returns all events with the given name. Matching is per
+// observation: an occurrence with multiple qualified roles named name
+// appears once per matching role, as a defensively-copied view carrying
+// that observation's Name/Source/Params but the occurrence's shared ID.
+// The name test itself is non-allocating (see (*Event).observationsNamed);
+// only actual matches pay for a deep-cloned view via eventView. Final
+// ordering is sorted below, so the scan order over p.events (map iteration)
+// is not semantic.
 func (p *Poset) EventsByName(name string) EventSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	var set EventSet
 	for _, e := range p.events {
-		for _, observation := range e.EventObservations() {
-			if observation.Name == name {
-				set = append(set, eventView(e, observation))
-			}
+		for _, observation := range e.observationsNamed(name) {
+			set = append(set, eventView(e, observation))
 		}
 	}
 	sortEventSet(set)
