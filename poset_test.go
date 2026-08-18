@@ -3,6 +3,7 @@ package gorapide
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 )
@@ -745,5 +746,32 @@ func TestIsolatedEventsAreRootsAndLeaves(t *testing.T) {
 
 	if !p.IsCausallyIndependent(a.ID, b.ID) {
 		t.Error("isolated events should be causally independent")
+	}
+}
+
+// --- Insert throughput ---
+
+// BenchmarkLinearChainInsertUntimed measures building a long untimed causal
+// chain, the shape a long-lived poset grows into. No occurrence carries a
+// Rapide interval, so timing closure is vacuous over the whole run.
+func BenchmarkLinearChainInsertUntimed(b *testing.B) {
+	const chainLength = 1000
+	for iteration := 0; iteration < b.N; iteration++ {
+		poset := NewPoset()
+		var causes []EventID
+		for index := 0; index < chainLength; index++ {
+			event, err := NewDeterministicEvent(EventProvenance{
+				Profile: "benchmark-profile", Model: "benchmark-model",
+				Instance: "component", Action: "Step",
+				Occurrence: strconv.Itoa(index), Causes: causes,
+			}, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := poset.AddEventWithCause(event, causes...); err != nil {
+				b.Fatal(err)
+			}
+			causes = []EventID{event.ID}
+		}
 	}
 }

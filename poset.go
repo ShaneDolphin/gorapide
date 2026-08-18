@@ -28,7 +28,13 @@ type Poset struct {
 	// its causal-equivalence class. The quotient of these classes by
 	// causalEdges is a strict DAG; together they represent Rapide's published
 	// causal preorder without storing symmetric graph cycles.
-	causalClass    map[EventID]EventID
+	causalClass map[EventID]EventID
+	// timedEvents counts stored occurrences carrying at least one Rapide
+	// interval. Timing closure is defined on a clock two occurrences share, so
+	// while this is zero no pair of stored occurrences can conflict and the
+	// closure scan is provably vacuous. Every write to events goes through
+	// storeEventLocked, which keeps this exact.
+	timedEvents    int
 	mu             sync.RWMutex
 	lamportCounter uint64
 	pendingEdges   []PendingEdge
@@ -77,7 +83,7 @@ func (p *Poset) addEventLocked(e *Event) error {
 	if e.deterministic {
 		stored = cloneEvent(e)
 	}
-	p.events[e.ID] = stored
+	p.storeEventLocked(stored)
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
 	p.ensureCausalClassesLocked()
@@ -98,7 +104,7 @@ func (p *Poset) mergeEventLocked(e *Event) error {
 	}
 	e.Timings = timings
 	e.Freeze()
-	p.events[e.ID] = e
+	p.storeEventLocked(e)
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
 	p.ensureCausalClassesLocked()
@@ -107,6 +113,22 @@ func (p *Poset) mergeEventLocked(e *Event) error {
 		p.lamportCounter = e.Clock.Lamport
 	}
 	return nil
+}
+
+// storeEventLocked writes an occurrence into the event store and keeps the
+// timed-occurrence count exact, including when a replacement gains Rapide
+// intervals the previous stored copy did not carry. Every write to p.events
+// goes through here so the timing-closure fast path can never read a stale
+// count. The caller must hold the write lock and must pass the copy that is
+// actually being stored, not the caller's original.
+func (p *Poset) storeEventLocked(e *Event) {
+	if previous, exists := p.events[e.ID]; exists && len(previous.Timings) != 0 {
+		p.timedEvents--
+	}
+	if len(e.Timings) != 0 {
+		p.timedEvents++
+	}
+	p.events[e.ID] = e
 }
 
 // DrainPendingEdges attempts to resolve all buffered pending edges whose
@@ -252,15 +274,21 @@ func (p *Poset) AddEventWithCause(e *Event, causes ...EventID) error {
 			return fmt.Errorf("%w: cause %s", ErrEventNotFound, cid)
 		}
 	}
-	checked := make(map[EventID]bool)
-	for _, cause := range causes {
-		for _, predecessor := range p.causalPredecessorIDsLocked(cause) {
-			if checked[predecessor] {
-				continue
-			}
-			checked[predecessor] = true
-			if err := sharedTimingConflict(p.events[predecessor], e); err != nil {
-				return err
+	// A conflict is a shared clock on which the earlier occurrence finishes
+	// after the later one starts, so an occurrence with no intervals of its own
+	// shares no clock with anything and can conflict with no predecessor.
+	// Collecting the causal past would then be pure cost.
+	if len(e.Timings) != 0 {
+		checked := make(map[EventID]bool)
+		for _, cause := range causes {
+			for _, predecessor := range p.causalPredecessorIDsLocked(cause) {
+				if checked[predecessor] {
+					continue
+				}
+				checked[predecessor] = true
+				if err := sharedTimingConflict(p.events[predecessor], e); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -276,6 +304,15 @@ func (p *Poset) AddEventWithCause(e *Event, causes ...EventID) error {
 }
 
 func (p *Poset) validateTimingClosureLocked(from, to EventID) error {
+	// See the timedEvents field comment: with no stored occurrence carrying a
+	// Rapide interval, no cross-product pair below can ever share a clock, so
+	// collecting the causal past and future is pure cost. A local check at
+	// 'from'/'to' is not enough here (an edge between two untimed events can
+	// still newly order a timed ancestor before a timed descendant), so this
+	// is the poset-wide count, not len(e.Timings).
+	if p.timedEvents == 0 {
+		return nil
+	}
 	left := p.causalPredecessorIDsLocked(from)
 	right := p.causalSuccessorIDsLocked(to)
 	for _, before := range left {

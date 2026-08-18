@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.2.2 — 2026-08-18
+
+Performance fix: v0.2.0's timing-closure validation on the two causal-insert
+hot paths (`AddEventWithCause`, `addCausalLocked`) rode helpers that scanned
+the entire event store per call, turning insertion of a long causal chain
+into O(n^2) work even when no event in the poset carried any `EventTiming`.
+Long-lived posets are the library's primary use case, so this was a hot-path
+regression, not a corner case.
+
+### Fixed
+- `AddEventWithCause` now skips predecessor collection and the conflict
+  check entirely when the incoming event carries no timing (a conflict
+  requires a clock both events share; an untimed event can share none).
+- `addCausalLocked` now tracks a poset-wide count of stored occurrences
+  carrying a Rapide interval and skips the O(closure) timing-closure scan
+  outright while it is zero. An edge between two untimed events can still
+  create a transitive violation between a timed ancestor and a timed
+  descendant, so this is a poset-wide count, not a per-edge local check.
+  The count is kept exact through one storage chokepoint used by every
+  path that writes an occurrence into the store, including
+  `AddObservationWithTimings` and JSON state replacement
+  (`Poset.UnmarshalJSON`, which previously bypassed it).
+- Behavior for any poset containing at least one timing is unchanged:
+  validation still runs the full closure scan exactly as before.
+
+### Performance
+`BenchmarkLinearChainInsertUntimed` (1,000-event untimed linear chain via
+`AddEventWithCause`, Apple M3, no `-race`):
+- Before (v0.2.1, commit 502be95): ~17.8s–20.6s per chain build.
+- After (this fix): ~46ms–49ms per chain build.
+- Roughly 380–440x faster; the shape now scales close to linearly instead
+  of quadratically in chain length.
+
 ## v0.2.1 — 2026-08-16
 
 Distribution-only release: the engineering documentation corpus is no

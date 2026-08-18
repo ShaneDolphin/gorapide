@@ -217,7 +217,7 @@ func (p *Poset) AddObservationWithTimings(id EventID, observation EventObservati
 		updated := *event
 		updated.Timings = mergedTimings
 		updated.Freeze()
-		p.events[id] = &updated
+		p.storeEventLocked(&updated)
 		return eventView(&updated, existing), nil
 	}
 
@@ -230,6 +230,6 @@ func (p *Poset) AddObservationWithTimings(id EventID, observation EventObservati
 	updated.Observations = observations
 	updated.Timings = mergedTimings
 	updated.Freeze()
-	p.events[id] = &updated
+	p.storeEventLocked(&updated)
 	return eventView(&updated, observation), nil
 }

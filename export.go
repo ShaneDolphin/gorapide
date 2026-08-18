@@ -114,6 +114,7 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 	p.reverseCausal = make(map[EventID]map[EventID]bool, len(export.Events))
 	p.causalClass = make(map[EventID]EventID, len(export.Events))
 	p.lamportCounter = 0
+	p.timedEvents = 0
 
 	// Restore events.
 	for _, ee := range export.Events {
@@ -144,7 +145,7 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 		if e.Params == nil {
 			e.Params = make(map[string]any)
 		}
-		p.events[e.ID] = e
+		p.storeEventLocked(e)
 		p.causalEdges[e.ID] = make(map[EventID]bool)
 		p.reverseCausal[e.ID] = make(map[EventID]bool)
 		p.causalClass[e.ID] = e.ID
