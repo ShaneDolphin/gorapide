@@ -22,6 +22,21 @@ import (
 //     Name/Source role — including the synthesized fallback for an event
 //     with no explicit Observations — returns the exact shared, frozen
 //     stored pointer, not a copy.
+//  6. a SECONDARY observation that happens to share the event's own Name
+//     but has a DIFFERENT Source is not mistaken for the primary role: it
+//     must still route through the cloned-view path, not the shared-
+//     pointer shortcut (round-4 MINOR 1 adversarial case).
+//  7. disclosed intra-view aliasing: within one view routed through
+//     eventView (a secondary-role match, or any match on a deterministic
+//     event), the view's Params and its own matching Observations entry's
+//     Params are the SAME map object — mutating one is visible through
+//     the other, WITHIN that one view — but this never leaks into the
+//     poset's stored state or into any other query result (round-4
+//     IMPORTANT finding: eventView's dedupe introduces this aliasing;
+//     round 3 incorrectly described the dedupe as having no observable
+//     effect outside the returned object — see event_observation.go's
+//     "Disclosed aliasing" note on eventView and the corrected CHANGELOG
+//     entry).
 //
 // Round-2 baseline: this test was originally written against, and passed
 // unmodified on, gorapide@v0.2.2 (see the perf-investigation-report.md
@@ -36,7 +51,10 @@ import (
 // cloned. Assertion 5 replaces the old "Bare" and "other" defensive-copy
 // checks with pointer-identity checks reflecting that ruling; assertion 4
 // keeps the original defensive-copy pin for every case the ruling does NOT
-// touch (secondary roles, deterministic events).
+// touch (secondary roles, deterministic events). Round 4 adds assertion 6
+// (the adversarial same-Name-different-Source case) and assertion 7 (the
+// intra-view aliasing pin), per controller ruling: KEEP the eventView
+// dedupe aliasing (the allocation win stands), but disclose and pin it.
 func TestEventsByNameContract(t *testing.T) {
 	p := NewPoset()
 
@@ -230,5 +248,113 @@ func TestEventsByNameContract(t *testing.T) {
 	}
 	if detQuery1[0] == detQuery2[0] {
 		t.Errorf("deterministic-event matches across separate EventsByName calls must not alias the same *Event")
+	}
+
+	// --- Assertion 6 (round 4, MINOR 1): adversarial case. A secondary
+	// observation that shares the event's own Name but has a DIFFERENT
+	// Source must not be mistaken for the primary role by
+	// isPrimaryObservation, and so must still route through the cloned-
+	// view path (eventView), not the legacy-primary shared-pointer
+	// shortcut.
+	adversarial := NewEvent("Adversarial", "home", map[string]any{"where": "home"})
+	if err := p.AddEvent(adversarial); err != nil {
+		t.Fatalf("AddEvent(adversarial): %v", err)
+	}
+	if _, err := p.AddObservation(adversarial.ID, EventObservation{
+		Name: "Adversarial", Source: "away", Params: map[string]any{"where": "away"},
+	}); err != nil {
+		t.Fatalf("AddObservation(adversarial secondary): %v", err)
+	}
+	// AddObservationWithTimings replaces the stored *Event with a fresh
+	// struct carrying the added observation (updated := *event; ...;
+	// p.storeEventLocked(&updated)), so the pointer to compare against is
+	// the CURRENT stored one, not the pre-AddObservation `adversarial`
+	// variable, which is now stale.
+	adversarialStored, ok := p.Event(adversarial.ID)
+	if !ok {
+		t.Fatalf("setup: adversarial event not found after AddObservation")
+	}
+	adversarialMatches := p.EventsByName("Adversarial")
+	if len(adversarialMatches) != 2 {
+		t.Fatalf("EventsByName(Adversarial): got %d results, want 2: %#v", len(adversarialMatches), adversarialMatches)
+	}
+	var primarySeen, secondarySeen bool
+	for _, m := range adversarialMatches {
+		switch m.Source {
+		case "home":
+			primarySeen = true
+			if m != adversarialStored {
+				t.Errorf("adversarial primary match (Name/Source == event's own) should be the shared stored pointer, got a distinct *Event")
+			}
+		case "away":
+			secondarySeen = true
+			if m == adversarialStored {
+				t.Errorf("adversarial secondary match (same Name, DIFFERENT Source=away) must NOT be pointer-identical to the stored event — it shares the event's Name but not its Source, so it is not the primary role")
+			}
+			if !reflect.DeepEqual(m.Params, map[string]any{"where": "away"}) {
+				t.Errorf("adversarial secondary match Params = %#v, want {where:away}", m.Params)
+			}
+		default:
+			t.Errorf("unexpected Source %q in EventsByName(Adversarial)", m.Source)
+		}
+	}
+	if !primarySeen || !secondarySeen {
+		t.Fatalf("EventsByName(Adversarial) missing expected matches: primarySeen=%v secondarySeen=%v", primarySeen, secondarySeen)
+	}
+
+	// --- Assertion 7 (round 4, IMPORTANT finding): disclosed intra-view
+	// aliasing pin. eventView's copyObservationsSkipping dedupe means
+	// that, within ONE returned view routed through eventView (a
+	// secondary-role match here), view.Params and the SAME view's
+	// matching Observations[i].Params are literally the same map object.
+	// Mutating one must be visible through the other WITHIN that view,
+	// but must not leak into the poset's stored state or into any other
+	// query result — including a fresh call to EventsByName.
+	aliasQuery := p.EventsByName("Match")
+	var roleBView *Event
+	for _, m := range aliasQuery {
+		if m.ID == multi.ID && m.Source == "roleB" {
+			roleBView = m
+		}
+	}
+	if roleBView == nil {
+		t.Fatalf("setup: expected a roleB view in EventsByName(Match)")
+	}
+	roleBView.Params["k"] = "ALIASED"
+	var roleBObservationParams map[string]any
+	foundRoleBObservation := false
+	for _, obs := range roleBView.Observations {
+		if obs.Name == "Match" && obs.Source == "roleB" {
+			roleBObservationParams = obs.Params
+			foundRoleBObservation = true
+		}
+	}
+	if !foundRoleBObservation {
+		t.Fatalf("setup: roleBView.Observations missing the roleB entry")
+	}
+	// Content: the mutation through view.Params must be visible through
+	// the same view's own matching Observations entry.
+	if !reflect.DeepEqual(roleBObservationParams, map[string]any{"k": "ALIASED"}) {
+		t.Errorf("intra-view aliasing pin failed: mutating view.Params did not propagate to the SAME view's matching Observations entry, got %#v, want {k:ALIASED}", roleBObservationParams)
+	}
+	// Identity: they must be the literal same map object, not merely
+	// coincidentally equal content.
+	if reflect.ValueOf(roleBView.Params).Pointer() != reflect.ValueOf(roleBObservationParams).Pointer() {
+		t.Errorf("intra-view aliasing pin failed: view.Params and the matching Observations entry's Params are not the same map object")
+	}
+	// The aliasing must be confined to this one view: the poset's stored
+	// state, and a fresh query, must be unaffected.
+	aliasQuery2 := p.EventsByName("Match")
+	foundFreshRoleB := false
+	for _, m := range aliasQuery2 {
+		if m.ID == multi.ID && m.Source == "roleB" {
+			foundFreshRoleB = true
+			if !reflect.DeepEqual(m.Params, map[string]any{"k": "b"}) {
+				t.Fatalf("mutation of a returned view leaked into the poset's stored state / a later query: got %#v, want {k:b}", m.Params)
+			}
+		}
+	}
+	if !foundFreshRoleB {
+		t.Fatalf("setup: expected a fresh roleB view in the second EventsByName(Match) query")
 	}
 }

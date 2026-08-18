@@ -150,6 +150,22 @@ func (e *Event) HasObservation(source, name string) bool {
 // copyObservationsSkipping reuses that same copy for the matching entry in
 // view.Observations instead of deep-copying the identical map a second
 // time.
+//
+// Disclosed aliasing: as a direct consequence, view.Params and
+// view.Observations[i].Params — for whichever i is the matched role — are
+// the SAME map object within one returned *Event, not two independent
+// copies of equal content (which is what v0.2.2 always allocated, and
+// what round 3 of this branch originally, incorrectly, claimed was
+// unchanged). Mutating one through the returned pointer mutates the
+// other. This aliasing is confined to the one returned view: it never
+// reaches back into the poset's stored state, another view's fields, or
+// any other event, so it does not violate the defensive-copy guarantee
+// query results give the caller relative to the poset — but a caller
+// that mutates a returned view (already outside the query contract,
+// which promises frozen-at-query-time snapshots, not mutable objects)
+// must be aware Params and the matching Observations entry are not
+// independent inside that one object. Pinned by
+// TestEventsByNameContract's intra-view aliasing assertion.
 func eventView(e *Event, observation EventObservation) *Event {
 	view := *e
 	view.Name = observation.Name
@@ -168,7 +184,11 @@ func eventView(e *Event, observation EventObservation) *Event {
 // copyObservationsSkipping copies observations exactly like copyObservations,
 // except that an entry whose Params map is literally the same map (by
 // identity, not just content) as alreadyCopiedFrom reuses alreadyCopiedTo
-// instead of computing a second, redundant deep copy of it. See eventView.
+// instead of computing a second, redundant deep copy of it. Called only
+// from eventView, with alreadyCopiedTo set to the view's own already-copied
+// Params map — so the reused entry's Params and the view's own Params end
+// up being the same map object, not independent copies. See eventView's
+// "Disclosed aliasing" note for the full explanation and its bound.
 func copyObservationsSkipping(observations []EventObservation, alreadyCopiedFrom, alreadyCopiedTo map[string]any) []EventObservation {
 	result := make([]EventObservation, len(observations))
 	for i, observation := range observations {

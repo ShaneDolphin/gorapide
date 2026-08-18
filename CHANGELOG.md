@@ -41,6 +41,19 @@ legacy event matched via its own primary role, removes the copy entirely.
   entry (matched by map identity via `reflect.Value.Pointer`, never by
   content, and never for a nil map, to avoid aliasing two logically
   distinct empty maps) and still deep-copies every other entry normally.
+  **This introduces disclosed intra-view aliasing:** within one returned
+  view, `view.Params` and `view.Observations[i].Params` (for the matched
+  role `i`) are now the SAME map object, not two independent copies of
+  equal content the way v0.2.2 always allocated. Mutating one through the
+  returned pointer mutates the other. The aliasing is confined to that one
+  returned view — it never reaches the poset's stored state, another
+  returned view, or any other event — so query results across separate
+  calls, and the poset itself, are unaffected; but a caller that mutates a
+  returned view (already outside the frozen-query-snapshot contract) must
+  be aware `Params` and the matching `Observations` entry are not
+  independent within that one object. Applies to every match routed
+  through `eventView`: secondary observation roles, and every match on a
+  deterministic event. Pinned by `TestEventsByNameContract`.
 - **Aliasing change:** when `EventsByName` matches a **legacy
   (non-deterministic)** event via its own **primary** Name/Source role —
   the role equal to the event's own `Name`/`Source`/`Params`, including the
@@ -55,6 +68,13 @@ legacy event matched via its own primary role, removes the copy entirely.
   `AddObservation`/`AddObservationWithTimings`, and **any** match at all
   on a **deterministic** event (deterministic events stay deep-cloned
   everywhere, matching how `Event()`/`Events()` already treat them).
+- Same caveat as the existing `Event()`/`Events()` norm applies to these
+  shared legacy-event pointers: a later causal-edge insertion can still
+  mutate a previously-returned pointer's `Clock.Lamport` in place via
+  Lamport propagation (`setClassLamportLocked` writes directly into the
+  stored `*Event`), so query results remain "frozen at query time" only
+  for the fields the query itself set, not as a guarantee against all
+  future mutation of that pointer.
 - Observable behavior — which `(event, observation)` pairs match, their
   values, and sort order — is unchanged in both passes.
   `TestEventsByNameContract` pins this: it was originally written against,
