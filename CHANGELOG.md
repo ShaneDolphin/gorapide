@@ -1,5 +1,101 @@
 # Changelog
 
+## v0.2.4 — 2026-08-18
+
+Performance fix: the causal-equivalence quotient introduced in v0.2.0 gave
+`causalClassSuccessorsLocked`/`causalClassPredecessorsLocked` (and the
+class-introspection helpers `causalClassMembersLocked`/
+`causalClassRepresentativesLocked`) an O(poset size) implementation —
+scanning every key ever registered in `p.causalEdges`/`p.reverseCausal`/
+`p.events` on every single call, just to answer "what does this ONE
+class's own adjacency/membership look like." `canReachClassLocked`'s BFS
+(underlying `IsCausallyBefore`, `IsCausallyIndependent`,
+`CausalAncestors`/`CausalDescendants`, and every `pattern.Seq`/`ImmSeq`/
+`Join`/`Independent`/`Within` causal check) calls
+`causalClassSuccessorsLocked` at every visited node, so this turned an
+O(V+E) reachability walk into O(V²): a rule pattern issuing a modest cross-
+product of `IsCausallyBefore` calls against a poset of a couple thousand
+events could cost well over 100ms per call once the poset was large enough
+— the old (pre-v0.2.0) pin's equivalent step was a direct `p.causalEdges[cur]`
+lookup, O(out-degree), with no such collapse.
+
+### Fixed
+- New incremental index `Poset.classMembers` (`representative -> sorted
+  raw member IDs`), the inverse of the existing `causalClass` map
+  (`member -> representative`). Maintained at the exact points class
+  membership ever changes: `registerTrivialClassLocked` (new helper,
+  replacing three near-duplicate `causalClass[id] = id` call sites in
+  `addEventLocked`, `mergeEventLocked`, and `UnmarshalJSON`'s event-restore
+  loop — a new event is its own one-member class) and
+  `addCausalEquivalenceClassLocked` (a class merge folds every absorbed
+  representative's members into the surviving representative's entry and
+  deletes the absorbed keys, piggybacked onto that function's existing
+  full-poset scan rather than adding a second one). `UnmarshalJSON`,
+  `MergeSnapshot`, and `ParseCanonicalPoset` all route through these same
+  entry points (directly or via the public `AddEvent`/
+  `AddCausalEquivalenceClass`/`AddCausal` API), so no separate handling was
+  needed for them.
+- `causalClassSuccessorsLocked`/`causalClassPredecessorsLocked` now union
+  `p.causalEdges[member]`/`p.reverseCausal[member]` over
+  `classMembers[representative]` (typically one member) instead of
+  scanning every key of `p.causalEdges`/`p.reverseCausal` — O(class size ×
+  out/in-degree) instead of O(poset size). This mirrors the same union the
+  old full scan computed, just discovered via the index instead of a scan,
+  so it stays correct even without relying on the (separately true, but
+  not depended on here) invariant that a non-representative member's own
+  `p.causalEdges` entry is always empty.
+- `causalClassMembersLocked`/`causalClassRepresentativesLocked` now read
+  `classMembers` directly (a lookup plus a defensive copy, and a key
+  listing, respectively) instead of scanning `p.events`/`p.causalClass` in
+  full on every call.
+- Observable behavior is unchanged: every function returns the identical
+  set, in the identical canonical `EventID` order, as before — only how
+  each set is discovered changed. No deterministic-path code
+  (`PrepareDeterministic`/`ExecuteDeterministic`/`ReplayDeterministic`,
+  canonical encoding, digesting) is touched by this fix; it is purely a
+  query-path performance change, verified two ways: a property-style
+  differential test (`TestCausalClassIndexMatchesReferenceUnderRandomMutation`)
+  runs 400 seeded random `AddCausal`/`AddCausalEquivalenceClass` operations
+  against a 60-event poset and, after every single mutation, checks every
+  index-backed query against literal copies of the old O(poset size)
+  implementations; and five mutation-path-specific tests (new event,
+  multi-way merge, chained/transitive merges, `UnmarshalJSON` state
+  replace, `MergeSnapshot`, `ParseCanonicalPoset`) pin the index against
+  the same reference implementations, mirroring the `timedEvents` counter's
+  existing test style. All six were verified to catch a deliberately
+  reintroduced bug (skipping the absorbed-representative-key deletion)
+  before being confirmed against the real fix.
+- `ensureCausalClassesLocked`'s own full-`p.events` scan (called on every
+  `AddCausal`/`AddCausalEquivalenceClass`, largely defensive/dead in
+  practice since every event-creation path already calls
+  `registerTrivialClassLocked` directly) is a related, similarly-shaped
+  O(poset size) cost on the INSERT path rather than the query path this
+  round targeted. Left untouched and out of scope for this fix; noted here
+  as a candidate for a future round.
+
+### Performance
+Apple M3, no `-race`, `-benchtime=200x -count=3` (before/after ranges
+across the 3 runs; `B/op`/`allocs/op` were exactly reproducible, matching
+the "identical results" contract):
+
+- `BenchmarkIsCausallyBeforeDeepChain` (3,000-event linear causal chain,
+  `IsCausallyBefore(first, last)` forcing a full-depth BFS, every class
+  trivial):
+  - Before (pre-fix, this branch's parent commit): ~227.4ms–235.2ms/op,
+    385,873–385,874 B/op, 9,023 allocs/op.
+  - After (this fix): ~891µs–1.72ms/op, 385,873–385,877 B/op, 9,023
+    allocs/op.
+  - ~130–260x faster per call, identical `B/op`/`allocs/op`, identical
+    query results.
+- `BenchmarkIsCausallyBeforeWithEquivalenceClasses` (two 1,500-event
+  parallel independent chains, corresponding events merged into 2-member
+  equivalence classes every 5th step, same `IsCausallyBefore` shape but
+  now walking through nontrivial classes on every BFS step):
+  - Before: ~196.8ms–213.3ms/op, 436,136–436,137 B/op, 8,421 allocs/op.
+  - After: ~910µs–1.51ms/op, 436,136–436,141 B/op, 8,421 allocs/op.
+  - ~130–220x faster per call, identical `B/op`/`allocs/op`, identical
+    query results.
+
 ## v0.2.3 — 2026-08-18
 
 Performance fix: `EventsByName` (and the general observation-view path it

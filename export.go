@@ -113,6 +113,7 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 	p.causalEdges = make(map[EventID]map[EventID]bool, len(export.Events))
 	p.reverseCausal = make(map[EventID]map[EventID]bool, len(export.Events))
 	p.causalClass = make(map[EventID]EventID, len(export.Events))
+	p.classMembers = make(map[EventID][]EventID, len(export.Events))
 	p.lamportCounter = 0
 	p.timedEvents = 0
 
@@ -148,7 +149,7 @@ func (p *Poset) UnmarshalJSON(data []byte) error {
 		p.storeEventLocked(e)
 		p.causalEdges[e.ID] = make(map[EventID]bool)
 		p.reverseCausal[e.ID] = make(map[EventID]bool)
-		p.causalClass[e.ID] = e.ID
+		p.registerTrivialClassLocked(e.ID)
 		if ee.Lamport > p.lamportCounter {
 			p.lamportCounter = ee.Lamport
 		}

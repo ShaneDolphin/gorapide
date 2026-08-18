@@ -29,6 +29,21 @@ type Poset struct {
 	// causalEdges is a strict DAG; together they represent Rapide's published
 	// causal preorder without storing symmetric graph cycles.
 	causalClass map[EventID]EventID
+	// classMembers maps every current causal-equivalence representative to
+	// the complete, sorted list of raw event IDs in its class (a trivial,
+	// not-yet-merged class maps its own ID to a one-element slice containing
+	// itself). It is the inverse of causalClass, incrementally maintained at
+	// the exact same points causalClass itself changes:
+	// registerTrivialClassLocked (new event: addEventLocked, mergeEventLocked,
+	// UnmarshalJSON's event-restore loop) and addCausalEquivalenceClassLocked
+	// (class merge, which also deletes the old, now-absorbed representatives'
+	// entries). It exists so causalClassMembersLocked/
+	// causalClassRepresentativesLocked/causalClassSuccessorsLocked/
+	// causalClassPredecessorsLocked can answer "who is in this class" and
+	// "what does this class's own adjacency look like" in time proportional
+	// to the class's actual size and degree, instead of scanning every event
+	// or every causalEdges/reverseCausal key ever registered.
+	classMembers map[EventID][]EventID
 	// timedEvents counts stored occurrences carrying at least one Rapide
 	// interval. Timing closure is defined on a clock two occurrences share, so
 	// while this is zero no pair of stored occurrences can conflict and the
@@ -47,7 +62,20 @@ func NewPoset() *Poset {
 		causalEdges:   make(map[EventID]map[EventID]bool),
 		reverseCausal: make(map[EventID]map[EventID]bool),
 		causalClass:   make(map[EventID]EventID),
+		classMembers:  make(map[EventID][]EventID),
 	}
+}
+
+// registerTrivialClassLocked records a newly-inserted event id as its own
+// one-member causal-equivalence class in both causalClass and its inverse
+// index classMembers. Called from every path that adds a new event id to
+// the poset (addEventLocked, mergeEventLocked, and UnmarshalJSON's event-
+// restore loop) so the two maps can never drift apart. A later
+// addCausalEquivalenceClassLocked call is the only other place either map
+// changes.
+func (p *Poset) registerTrivialClassLocked(id EventID) {
+	p.causalClass[id] = id
+	p.classMembers[id] = []EventID{id}
 }
 
 // AddEvent adds an event to the poset, freezes it, and assigns a Lamport
@@ -87,7 +115,7 @@ func (p *Poset) addEventLocked(e *Event) error {
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
 	p.ensureCausalClassesLocked()
-	p.causalClass[e.ID] = e.ID
+	p.registerTrivialClassLocked(e.ID)
 	return nil
 }
 
@@ -108,7 +136,7 @@ func (p *Poset) mergeEventLocked(e *Event) error {
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
 	p.ensureCausalClassesLocked()
-	p.causalClass[e.ID] = e.ID
+	p.registerTrivialClassLocked(e.ID)
 	if e.Clock.Lamport > p.lamportCounter {
 		p.lamportCounter = e.Clock.Lamport
 	}

@@ -851,3 +851,111 @@ func BenchmarkEventsByNameLegacyPrimary(b *testing.B) {
 		}
 	}
 }
+
+// --- Causal-class query throughput (perf/causal-class-successor-lookup) ---
+
+// BenchmarkIsCausallyBeforeDeepChain builds a long, purely linear causal
+// chain (each event caused by exactly the previous one, zero causal-
+// equivalence classes) and repeatedly asks whether the very first event
+// causally precedes the very last, forcing canReachClassLocked's BFS to
+// walk every hop of the chain. This is the microbenchmark shape the
+// v0.2.4 profiling report's Round 3 section diagnosed:
+// causalClassSuccessorsLocked used to scan every key ever registered in
+// p.causalEdges (O(poset size)) on every BFS step just to find one node's
+// own out-edges, turning an O(chain length) BFS into O(chain length^2)
+// total work. After the fix, each step is a direct p.causalEdges[member]
+// lookup (O(out-degree), here 0 or 1), restoring the old pin's O(chain
+// length) shape.
+func BenchmarkIsCausallyBeforeDeepChain(b *testing.B) {
+	const chainLength = 3000
+	poset := NewPoset()
+	events := make([]*Event, chainLength)
+	var causes []EventID
+	for index := 0; index < chainLength; index++ {
+		event, err := NewDeterministicEvent(EventProvenance{
+			Profile: "benchmark-profile", Model: "benchmark-model",
+			Instance: "component", Action: "Step",
+			Occurrence: strconv.Itoa(index), Causes: causes,
+		}, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := poset.AddEventWithCause(event, causes...); err != nil {
+			b.Fatal(err)
+		}
+		events[index] = event
+		causes = []EventID{event.ID}
+	}
+	first, last := events[0].ID, events[chainLength-1].ID
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for iteration := 0; iteration < b.N; iteration++ {
+		if !poset.IsCausallyBefore(first, last) {
+			b.Fatal("expected the chain's first event to causally precede its last")
+		}
+	}
+}
+
+// BenchmarkIsCausallyBeforeWithEquivalenceClasses builds two parallel,
+// causally-independent chains and merges corresponding events into
+// 2-member causal-equivalence classes at regular intervals (a valid merge:
+// paired events across the two chains never causally precede one
+// another), then repeatedly asks whether chain A's first event causally
+// precedes its last. Unlike BenchmarkIsCausallyBeforeDeepChain (every
+// class trivial, one member), this exercises the classMembers-backed
+// causalClassSuccessorsLocked/causalClassPredecessorsLocked lookup (v0.2.4
+// P0) across classes with more than one raw member, plus
+// causalRepresentativeLocked resolution through merged classes on every
+// BFS step -- the same classMembers index also backs the v0.2.4 P1 scope
+// (causalClassMembersLocked/causalClassRepresentativesLocked).
+func BenchmarkIsCausallyBeforeWithEquivalenceClasses(b *testing.B) {
+	const chainLength = 1500
+	const mergeEvery = 5
+	poset := NewPoset()
+	chainA := make([]*Event, chainLength)
+	var causesA, causesB []EventID
+	for index := 0; index < chainLength; index++ {
+		eventA, err := NewDeterministicEvent(EventProvenance{
+			Profile: "benchmark-profile", Model: "benchmark-model",
+			Instance: "branch-a", Action: "StepA",
+			Occurrence: strconv.Itoa(index), Causes: causesA,
+		}, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := poset.AddEventWithCause(eventA, causesA...); err != nil {
+			b.Fatal(err)
+		}
+		chainA[index] = eventA
+		causesA = []EventID{eventA.ID}
+
+		eventB, err := NewDeterministicEvent(EventProvenance{
+			Profile: "benchmark-profile", Model: "benchmark-model",
+			Instance: "branch-b", Action: "StepB",
+			Occurrence: strconv.Itoa(index), Causes: causesB,
+		}, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := poset.AddEventWithCause(eventB, causesB...); err != nil {
+			b.Fatal(err)
+		}
+		causesB = []EventID{eventB.ID}
+
+		if index%mergeEvery == 0 {
+			if err := poset.AddCausalEquivalenceClass(eventA.ID, eventB.ID); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	first, last := chainA[0].ID, chainA[chainLength-1].ID
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for iteration := 0; iteration < b.N; iteration++ {
+		if !poset.IsCausallyBefore(first, last) {
+			b.Fatal("expected chain A's first event to causally precede its last")
+		}
+	}
+}

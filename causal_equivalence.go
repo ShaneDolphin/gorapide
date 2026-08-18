@@ -53,9 +53,11 @@ func (p *Poset) addCausalEquivalenceClassLocked(ids ...EventID) error {
 	}
 	representative := ordered[0]
 	maximumLamport := uint64(0)
+	members := make([]EventID, 0, len(ordered))
 	for id, event := range p.events {
 		if representatives[p.causalRepresentativeLocked(id)] {
 			p.causalClass[id] = representative
+			members = append(members, id)
 			if event.Clock.Lamport > maximumLamport {
 				maximumLamport = event.Clock.Lamport
 			}
@@ -66,6 +68,19 @@ func (p *Poset) addCausalEquivalenceClassLocked(ids ...EventID) error {
 			event.Clock.Lamport = maximumLamport
 		}
 	}
+	// members is exactly the merged class's complete new membership: every
+	// id whose PRE-merge representative was one of the classes being
+	// absorbed (representatives, built above from the supplied ids'
+	// pre-merge representatives). Fold it into classMembers under the
+	// surviving representative, and drop the index entries for every other
+	// old representative — they no longer head any class.
+	sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
+	for _, old := range ordered {
+		if old != representative {
+			delete(p.classMembers, old)
+		}
+	}
+	p.classMembers[representative] = members
 	p.normalizeCausalEdgesLocked()
 	p.propagateLamportLocked(representative)
 	return nil
@@ -172,9 +187,20 @@ func (p *Poset) ensureCausalClassesLocked() {
 	if p.causalClass == nil {
 		p.causalClass = make(map[EventID]EventID, len(p.events))
 	}
+	if p.classMembers == nil {
+		p.classMembers = make(map[EventID][]EventID, len(p.events))
+	}
+	// Defensive only: every current entry point that adds a new event id
+	// (addEventLocked, mergeEventLocked, UnmarshalJSON's event-restore loop)
+	// already calls registerTrivialClassLocked itself, so in normal
+	// operation this loop finds nothing left to do. It stays as a fallback
+	// — keeping causalClass and classMembers consistent with each other
+	// even here — rather than being removed, since it is not the cost this
+	// round targets (this function's own full p.events scan is a separate,
+	// out-of-scope defect noted in the round's report, not touched here).
 	for id := range p.events {
 		if p.causalClass[id] == "" {
-			p.causalClass[id] = id
+			p.registerTrivialClassLocked(id)
 		}
 	}
 }
@@ -186,25 +212,33 @@ func (p *Poset) causalRepresentativeLocked(id EventID) EventID {
 	return id
 }
 
+// causalClassMembersLocked returns id's complete causal-equivalence class,
+// in canonical EventID order. Backed directly by classMembers, which is
+// already maintained sorted (see registerTrivialClassLocked and
+// addCausalEquivalenceClassLocked), so this is a lookup plus a defensive
+// copy — no scan of p.events, no sort — instead of the O(poset size) scan
+// the previous implementation paid on every call.
 func (p *Poset) causalClassMembersLocked(id EventID) []EventID {
 	representative := p.causalRepresentativeLocked(id)
-	result := make([]EventID, 0)
-	for candidate := range p.events {
-		if p.causalRepresentativeLocked(candidate) == representative {
-			result = append(result, candidate)
-		}
+	members := p.classMembers[representative]
+	if len(members) == 0 {
+		return []EventID{}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	result := make([]EventID, len(members))
+	copy(result, members)
 	return result
 }
 
+// causalClassRepresentativesLocked returns every current representative, in
+// canonical EventID order. classMembers' key set IS the current
+// representative set by construction (registerTrivialClassLocked adds one
+// key per new event; addCausalEquivalenceClassLocked deletes every
+// absorbed representative's key in the same step it installs the merged
+// one), so this only needs to list and sort those keys — no scan of
+// p.events.
 func (p *Poset) causalClassRepresentativesLocked() []EventID {
-	seen := make(map[EventID]bool, len(p.events))
-	for id := range p.events {
-		seen[p.causalRepresentativeLocked(id)] = true
-	}
-	result := make([]EventID, 0, len(seen))
-	for representative := range seen {
+	result := make([]EventID, 0, len(p.classMembers))
+	for representative := range p.classMembers {
 		result = append(result, representative)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
@@ -237,13 +271,27 @@ func (p *Poset) causalEquivalencePairsLocked() [][2]EventID {
 	return result
 }
 
+// causalClassSuccessorsLocked returns the causal successors of
+// representative's class, resolved to representatives, in canonical
+// EventID order.
+//
+// Every raw event id gets a p.causalEdges entry at insert time
+// (addEventLocked/mergeEventLocked/UnmarshalJSON), but the ONLY keys that
+// ever hold real edge data are current representatives: addCausalLocked
+// resolves both endpoints via causalRepresentativeLocked before writing
+// p.causalEdges[from][to], and every causal-equivalence merge immediately
+// calls normalizeCausalEdgesLocked, which rebuilds the whole map keyed by
+// the representatives current AT THAT MOMENT. A non-representative
+// member's p.causalEdges entry is therefore always empty. Rather than
+// depend on that invariant alone, this unions p.causalEdges[member] over
+// every member in the class (via classMembers — typically one member, the
+// representative itself), which is correct even if that invariant were
+// ever violated: it reproduces exactly the set the old O(poset size) full-
+// map scan computed, just without paying for the scan.
 func (p *Poset) causalClassSuccessorsLocked(representative EventID) []EventID {
 	seen := make(map[EventID]bool)
-	for from, successors := range p.causalEdges {
-		if p.causalRepresentativeLocked(from) != representative {
-			continue
-		}
-		for to := range successors {
+	for _, member := range p.classMembers[representative] {
+		for to := range p.causalEdges[member] {
 			candidate := p.causalRepresentativeLocked(to)
 			if candidate != representative {
 				seen[candidate] = true
@@ -258,13 +306,14 @@ func (p *Poset) causalClassSuccessorsLocked(representative EventID) []EventID {
 	return result
 }
 
+// causalClassPredecessorsLocked is causalClassSuccessorsLocked's mirror
+// over p.reverseCausal. See that function's doc comment for why unioning
+// over classMembers is correct and sufficient without scanning every
+// p.reverseCausal key.
 func (p *Poset) causalClassPredecessorsLocked(representative EventID) []EventID {
 	seen := make(map[EventID]bool)
-	for to, predecessors := range p.reverseCausal {
-		if p.causalRepresentativeLocked(to) != representative {
-			continue
-		}
-		for from := range predecessors {
+	for _, member := range p.classMembers[representative] {
+		for from := range p.reverseCausal[member] {
 			candidate := p.causalRepresentativeLocked(from)
 			if candidate != representative {
 				seen[candidate] = true
