@@ -813,3 +813,41 @@ func BenchmarkEventsByName(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkEventsByNameLegacyPrimary is the legacy-event counterpart of
+// BenchmarkEventsByName: same poset shape (5,000 events, 20 names cycling,
+// one queried name with 250 matches), but every event is a legacy
+// (non-deterministic) NewEvent occurrence matched via its own primary
+// Name/Source role. This is the case round 3's aliasing ruling targets
+// directly: EventsByName returns the shared, frozen stored pointer for
+// this case instead of building a cloned view (matching how Event() and
+// Events() already treat legacy events), so per-match cost should collapse
+// to roughly the cost of appending an existing pointer, not a deep clone.
+func BenchmarkEventsByNameLegacyPrimary(b *testing.B) {
+	const eventCount = 5000
+	const nameCount = 20
+	poset := NewPoset()
+	var previous *Event
+	for index := 0; index < eventCount; index++ {
+		name := "Kind" + strconv.Itoa(index%nameCount)
+		event := NewEvent(name, "component", map[string]any{"index": index})
+		if err := poset.AddEvent(event); err != nil {
+			b.Fatal(err)
+		}
+		if previous != nil {
+			if err := poset.AddCausal(previous.ID, event.ID); err != nil {
+				b.Fatal(err)
+			}
+		}
+		previous = event
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for iteration := 0; iteration < b.N; iteration++ {
+		set := poset.EventsByName("Kind7")
+		if len(set) != eventCount/nameCount {
+			b.Fatalf("EventsByName(Kind7): got %d results, want %d", len(set), eventCount/nameCount)
+		}
+	}
+}

@@ -11,7 +11,9 @@ that computed a full `Params`/`Observations` copy it immediately discarded
 and recomputed. Both costs scale with poset size and are paid on every call,
 so this is a hot-path regression for any workload (pattern matching, rule
 evaluation, constraint checking) that queries a poset by event name
-repeatedly as it grows.
+repeatedly as it grows. A second pass below removes a further redundant
+copy in the same view-construction path and, for the common case of a
+legacy event matched via its own primary role, removes the copy entirely.
 
 ### Fixed
 - `eventView` no longer routes through `cloneEvent`, which unconditionally
@@ -31,20 +33,63 @@ repeatedly as it grows.
   actually match a name reach `eventView`, which builds the caller-owned
   deep clone. `EventsByName`'s final result is still passed through the
   same `sortEventSet`, so output ordering is unchanged.
-- Observable behavior is unchanged: same `(event, observation)` pairs
-  matched, same values, same deterministic sort order, same
-  defensive-copy guarantee on returned events. Pinned by
-  `TestEventsByNameContract`, written against and verified to pass
-  unmodified on v0.2.2 before the fix, and re-verified after.
+- `eventView` no longer deep-copies the matched observation's `Params` map
+  twice. Previously it copied `observation.Params` directly into the
+  view's `Params`, then copied it again inside `copyObservations` for the
+  same (aliased) entry in the event's `Observations` list. A new
+  `copyObservationsSkipping` reuses the already-computed copy for that one
+  entry (matched by map identity via `reflect.Value.Pointer`, never by
+  content, and never for a nil map, to avoid aliasing two logically
+  distinct empty maps) and still deep-copies every other entry normally.
+- **Aliasing change:** when `EventsByName` matches a **legacy
+  (non-deterministic)** event via its own **primary** Name/Source role —
+  the role equal to the event's own `Name`/`Source`/`Params`, including the
+  synthesized fallback for an event with no explicit `Observations` — it
+  now returns the shared, frozen stored `*Event` pointer instead of
+  building a cloned view. This aligns `EventsByName` with the aliasing
+  norm `Event()` and `Events()` already use for legacy events (via
+  `snapshotEvent`): results are race-free but frozen at query time, and
+  **callers must not mutate a returned legacy-event primary-observation
+  match**. Every other case is unchanged and still returns an isolated,
+  defensively-copied view: a **secondary** observation role added via
+  `AddObservation`/`AddObservationWithTimings`, and **any** match at all
+  on a **deterministic** event (deterministic events stay deep-cloned
+  everywhere, matching how `Event()`/`Events()` already treat them).
+- Observable behavior — which `(event, observation)` pairs match, their
+  values, and sort order — is unchanged in both passes.
+  `TestEventsByNameContract` pins this: it was originally written against,
+  and verified to pass unmodified on, v0.2.2; its defensive-copy assertion
+  is now split so it still requires a fresh copy for secondary-role and
+  deterministic-event matches, while separately requiring pointer-identity
+  with the shared stored event for legacy primary-observation matches
+  (verified to fail against the pre-aliasing code and pass after).
 
 ### Performance
-`BenchmarkEventsByName` (5,000-event poset, 20 distinct names cycling,
-querying a name with 250 matches, Apple M3, no `-race`):
-- Before (v0.2.2, commit 95d623b): ~1.61ms–1.75ms per call,
-  ~2.50MB/op, 23,261 allocs/op.
-- After (this fix): ~248µs–293µs per call, ~248.5KB/op, 2,011 allocs/op.
-- Roughly 6x faster per call, and about 10x fewer bytes allocated and
-  11.6x fewer allocations, with identical query results.
+`BenchmarkEventsByName` (5,000-event poset of deterministic events, 20
+distinct names cycling, querying a name with 250 matches — exercises the
+`eventView` double-copy dedupe only, since deterministic events never take
+the aliasing shortcut) and `BenchmarkEventsByNameLegacyPrimary` (identical
+shape, but every event is a legacy `NewEvent` occurrence matched via its
+own primary role — exercises the aliasing change), Apple M3, no `-race`.
+`ns/op` was noisy across runs in this environment; `B/op`/`allocs/op` were
+exactly reproducible across every run and are the more reliable signal:
+
+- `BenchmarkEventsByName`:
+  - Before (v0.2.2, commit 95d623b): ~1.61ms–1.75ms/op, ~2.50MB/op,
+    23,261 allocs/op.
+  - After round 2 (commit 6fc9dc6): ~248µs–429µs/op, 248,528 B/op,
+    2,011 allocs/op.
+  - After round 3 (this fix, double-copy dedupe): ~315µs–493µs/op,
+    164,528 B/op, 1,511 allocs/op — a further ~34% fewer bytes and ~25%
+    fewer allocations than round 2, with identical query results.
+- `BenchmarkEventsByNameLegacyPrimary` (new in round 3):
+  - Before round 3 (round-2 code, still cloning every match): ~349µs–1.0ms/op,
+    244,528 B/op, 1,761 allocs/op.
+  - After round 3 (this fix, primary-observation aliasing): ~159µs–231µs/op,
+    16,528 B/op, 261 allocs/op — about 93% fewer bytes and 85% fewer
+    allocations for the common legacy-event case, since 250 of the 261
+    remaining allocations are just the returned `EventSet` slice growth,
+    not per-match clones.
 
 ## v0.2.2 — 2026-08-18
 

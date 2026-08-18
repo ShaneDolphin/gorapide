@@ -142,18 +142,79 @@ func (e *Event) HasObservation(source, name string) bool {
 // eventView immediately overwrites, so routing through it would compute and
 // discard a full Params/Observations copy on every call. Every field set
 // here mirrors what cloneEvent would have produced, minus that dead work.
+//
+// observation.Params is deep-copied once, directly, into the returned
+// view's Params. When e.Observations is non-empty, observation is one of
+// its entries by value (observationsNamed/EventObservations both alias the
+// stored Observations' Params maps rather than copying them), so
+// copyObservationsSkipping reuses that same copy for the matching entry in
+// view.Observations instead of deep-copying the identical map a second
+// time.
 func eventView(e *Event, observation EventObservation) *Event {
 	view := *e
 	view.Name = observation.Name
 	view.Source = observation.Source
-	view.Params = copyParams(observation.Params)
-	view.Observations = copyObservations(e.Observations)
+	viewParams := copyParams(observation.Params)
+	view.Params = viewParams
+	view.Observations = copyObservationsSkipping(e.Observations, observation.Params, viewParams)
 	view.Timings = append([]EventTiming(nil), e.Timings...)
 	view.expectedCauses = append([]EventID(nil), e.expectedCauses...)
 	if e.Clock.Vector != nil {
 		view.Clock.Vector = e.Clock.Vector.Clone()
 	}
 	return &view
+}
+
+// copyObservationsSkipping copies observations exactly like copyObservations,
+// except that an entry whose Params map is literally the same map (by
+// identity, not just content) as alreadyCopiedFrom reuses alreadyCopiedTo
+// instead of computing a second, redundant deep copy of it. See eventView.
+func copyObservationsSkipping(observations []EventObservation, alreadyCopiedFrom, alreadyCopiedTo map[string]any) []EventObservation {
+	result := make([]EventObservation, len(observations))
+	for i, observation := range observations {
+		if sameParamsMap(observation.Params, alreadyCopiedFrom) {
+			result[i] = EventObservation{
+				Name:   observation.Name,
+				Source: observation.Source,
+				Params: alreadyCopiedTo,
+			}
+			continue
+		}
+		result[i] = EventObservation{
+			Name:   observation.Name,
+			Source: observation.Source,
+			Params: copyParams(observation.Params),
+		}
+	}
+	return result
+}
+
+// sameParamsMap reports whether a and b are literally the same map value
+// (identity), not merely equal in content. Two nil maps are never treated
+// as the same: copyParams(nil) allocates a fresh empty map on every call,
+// and conflating separate nils here would alias two logically distinct
+// empty maps into the same object in the returned view — exactly the kind
+// of aliasing hazard this identity check exists to avoid introducing.
+func sameParamsMap(a, b map[string]any) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
+}
+
+// isPrimaryObservation reports whether observation is e's own active
+// Name/Source role, i.e. the role EventsByName's fallback synthesizes for
+// an event with no explicit Observations, or the entry NewEvent /
+// NewDeterministicEvent seed at construction otherwise. e.Name/e.Source
+// never change after AddEvent (AddObservationWithTimings only appends to
+// Observations and updates Timings), and AddObservationWithTimings rejects
+// any second stored observation sharing a (Name, Source) pair with
+// different Params (ErrObservationConflict), so at most one stored
+// observation can ever carry e's own (Name, Source) — this equality test
+// is therefore a stable, unambiguous identification of the primary role
+// for the entire life of the event.
+func (e *Event) isPrimaryObservation(observation EventObservation) bool {
+	return observation.Name == e.Name && observation.Source == e.Source
 }
 
 func cloneEvent(e *Event) *Event {

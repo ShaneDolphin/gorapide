@@ -383,18 +383,35 @@ func (p *Poset) Events() EventSet {
 
 // EventsByName returns all events with the given name. Matching is per
 // observation: an occurrence with multiple qualified roles named name
-// appears once per matching role, as a defensively-copied view carrying
-// that observation's Name/Source/Params but the occurrence's shared ID.
-// The name test itself is non-allocating (see (*Event).observationsNamed);
-// only actual matches pay for a deep-cloned view via eventView. Final
-// ordering is sorted below, so the scan order over p.events (map iteration)
-// is not semantic.
+// appears once per matching role, as a view carrying that observation's
+// Name/Source/Params but the occurrence's shared ID. The name test itself
+// is non-allocating (see (*Event).observationsNamed); only actual matches
+// pay for a deep-cloned view via eventView, and even then only when one is
+// needed (see the aliasing note below). Final ordering is sorted below, so
+// the scan order over p.events (map iteration) is not semantic.
+//
+// A legacy (non-deterministic) event matched via its own primary
+// Name/Source role — including the synthesized fallback for an event with
+// no explicit Observations — is returned as the shared, frozen stored
+// pointer, exactly as Event() and Events() already return legacy events
+// (via snapshotEvent). This is an aliasing norm the rest of the library's
+// query surface already documents and relies on for legacy events:
+// query results are race-free but frozen at query time, and callers must
+// not mutate them. Every other match — a secondary/added observation role
+// on any event, or any match at all on a deterministic event (which stays
+// deep-cloned everywhere, matching Event()/Events()' own treatment of
+// deterministic events) — still gets an isolated, defensively-copied view
+// via eventView.
 func (p *Poset) EventsByName(name string) EventSet {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	var set EventSet
 	for _, e := range p.events {
 		for _, observation := range e.observationsNamed(name) {
+			if !e.deterministic && e.isPrimaryObservation(observation) {
+				set = append(set, e)
+				continue
+			}
 			set = append(set, eventView(e, observation))
 		}
 	}
