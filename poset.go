@@ -44,6 +44,11 @@ type Poset struct {
 	// to the class's actual size and degree, instead of scanning every event
 	// or every causalEdges/reverseCausal key ever registered.
 	classMembers map[EventID][]EventID
+	// classRepairScans counts how many times ensureCausalClassesLocked had to
+	// fall back to its full p.events repair scan. In normal operation every
+	// event is registered at creation, so this stays 0; tests pin that so the
+	// scan can never silently return to the per-edge insert path.
+	classRepairScans uint64
 	// timedEvents counts stored occurrences carrying at least one Rapide
 	// interval. Timing closure is defined on a clock two occurrences share, so
 	// while this is zero no pair of stored occurrences can conflict and the
@@ -111,10 +116,13 @@ func (p *Poset) addEventLocked(e *Event) error {
 	if e.deterministic {
 		stored = cloneEvent(e)
 	}
+	// Ensure the class maps BEFORE the new id enters p.events: at that point
+	// causalClass and p.events agree in size, so the call only nil-initialises
+	// (calling it after the store made every AddEvent pay a full repair scan).
+	p.ensureCausalClassesLocked()
 	p.storeEventLocked(stored)
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
-	p.ensureCausalClassesLocked()
 	p.registerTrivialClassLocked(e.ID)
 	return nil
 }
@@ -132,10 +140,10 @@ func (p *Poset) mergeEventLocked(e *Event) error {
 	}
 	e.Timings = timings
 	e.Freeze()
+	p.ensureCausalClassesLocked() // before the store — see addEventLocked
 	p.storeEventLocked(e)
 	p.causalEdges[e.ID] = make(map[EventID]bool)
 	p.reverseCausal[e.ID] = make(map[EventID]bool)
-	p.ensureCausalClassesLocked()
 	p.registerTrivialClassLocked(e.ID)
 	if e.Clock.Lamport > p.lamportCounter {
 		p.lamportCounter = e.Clock.Lamport

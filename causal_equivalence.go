@@ -198,6 +198,16 @@ func (p *Poset) ensureCausalClassesLocked() {
 	// even here — rather than being removed, since it is not the cost this
 	// round targets (this function's own full p.events scan is a separate,
 	// out-of-scope defect noted in the round's report, not touched here).
+	// Fast path: causalClass holds exactly one entry per registered event
+	// (registerTrivialClassLocked runs on every event-creation path, and a
+	// class merge only re-points members, never deletes their keys), so equal
+	// sizes mean there is nothing to repair. Without this guard every
+	// AddCausal / AddCausalEquivalenceClass paid the O(|events|) scan below,
+	// making a snapshot import O(|events| x |edges|).
+	if len(p.causalClass) == len(p.events) {
+		return
+	}
+	p.classRepairScans++
 	for id := range p.events {
 		if p.causalClass[id] == "" {
 			p.registerTrivialClassLocked(id)

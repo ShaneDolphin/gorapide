@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.2.5 — 2026-08-28
+
+Performance fix: the insert path still paid the O(poset size) scan that
+v0.2.4 removed from the query path. `ensureCausalClassesLocked` ends with a
+full `for id := range p.events` repair loop (documented in v0.2.4 as an
+out-of-scope defect), and it was invoked (a) on every `AddCausal` /
+`AddCausalEquivalenceClass`, and (b) inside `addEventLocked` /
+`mergeEventLocked` *after* the new id had entered `p.events` but *before*
+`registerTrivialClassLocked` — so the maps disagreed by exactly one entry
+at that instant and every single `AddEvent` also ran the full scan.
+Net effect: `AddEvent` and `AddCausal` were each O(|events|), so building
+or importing a poset (`UnmarshalJSON`, `MergeSnapshot`,
+`ParseCanonicalPoset`, `PosetBuilder`) was O(|events| × (|events| +
+|edges|)). Measured: a 18,895-event / 230,952-edge `UnmarshalJSON` took
+~90 s (0.65 s on v0.1.0); a synthetic 4,000-event import scaled 4× per
+doubling.
+
+### Fixed
+- `ensureCausalClassesLocked` now returns immediately when
+  `len(p.causalClass) == len(p.events)`. Every event-creation path registers
+  its trivial class up front and class merges only re-point members (they
+  never delete keys), so equal sizes prove there is nothing to repair. The
+  repair loop is kept — and still runs — for the genuinely inconsistent
+  case (a zero-value `Poset{}` or externally damaged maps).
+- `addEventLocked` / `mergeEventLocked` call `ensureCausalClassesLocked`
+  *before* storing the new event, so at call time the maps agree and the
+  call only nil-initialises them; `registerTrivialClassLocked` follows the
+  store as before. `UnmarshalJSON`'s restore loop already had this order.
+- New unexported counter `Poset.classRepairScans` records how often the
+  fallback scan actually ran. `TestEnsureCausalClassesDoesNotScanOnOrdinaryInserts`
+  pins it at 0 across `AddEvent`, `AddCausal`, a trivial
+  `AddCausalEquivalenceClass`, and a `json.Unmarshal` round-trip;
+  `TestEnsureCausalClassesRepairsMissingRegistration` deletes a
+  registration by hand and pins exactly one repair scan that re-registers
+  the event. Both tests fail against v0.2.4 (300 scans for 300 events).
+- Observable behaviour is unchanged: identical sets, identical order, no
+  deterministic-path (`Prepare`/`Execute`/`Replay`, canonical encoding,
+  digests) code touched. Import of the 18,895-event poset above: ~90 s →
+  0.68 s; synthetic import now scales ~2× per doubling (16,000 events in
+  0.2 s).
+
 ## v0.2.4 — 2026-08-18
 
 Performance fix: the causal-equivalence quotient introduced in v0.2.0 gave
