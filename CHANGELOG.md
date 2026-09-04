@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.2.6 — 2026-09-04
+
+Performance fix: canonical constraint evaluation re-encoded the whole poset
+once per constraint, and the canonical encoder's causal-depth pass re-sorted
+its entire ready set after every pop. Together these made
+`ConstraintSet.EvaluateCanonical` cost roughly 1 + 2N full poset encodings
+for N members, each superlinear in poset size. Measured: a 50-member set over
+a 20,201-event poset took 63 s on v0.2.5; the same call takes 9 s here, and a
+single `SemanticDigest` of that poset drops from 0.52 s to 0.10 s.
+
+No exported signature changes. Every canonical byte sequence — poset encodings
+across formats v1–v4, constraint reports, constraint-set reports, and their
+digests — is byte-identical to v0.2.5 (verified by a differential harness over
+79 artifacts and by the pinned digests in the existing test suite).
+
+### Fixed
+- `Constraint.EvaluateCanonicalWithState` no longer computes the poset's
+  semantic digest twice for an unfiltered constraint. When the constraint
+  declares no `Filter` and no `Alphabet`, `evaluationView` returns the input
+  poset unchanged, so `EvaluationPosetDigest` is `PosetDigest` by construction
+  and is now reused rather than recomputed. Filtered constraints still digest
+  their projection separately. New helper `Constraint.hasEvaluationFilter`.
+- `ConstraintSet.EvaluateCanonicalWithState` computes the poset digest once and
+  passes it to each `*Constraint` member through the new unexported
+  `evaluateCanonicalWithPosetDigest`, instead of every member re-encoding the
+  same poset. Members that are other `CanonicalCheckable` implementations are
+  unchanged. `TestConstraintSetEvaluateCanonicalDigestsPosetOnce` pins exactly
+  one whole-poset digest per set evaluation;
+  `TestConstraintSetDigestReuseMatchesStandaloneReports` pins that a
+  set-evaluated member report is byte-identical to the member evaluated alone.
+- `Poset.causalDepthsLocked` keeps its ready set in a min-heap
+  (`eventIDMinHeap`, `container/heap`) instead of calling `sort.Slice` on the
+  full slice after every pop. The traversal still visits the lexicographically
+  least ready representative at each step, so the order — and therefore every
+  derived depth — is unchanged; longest-path depths are order-independent in
+  any case. `TestCausalDepthsHeapMatchesSortedTraversal*` compare the heap
+  traversal against a copy of the v0.2.5 sort-based traversal on a 2,000-child
+  fan-out and on a diamond-with-equivalence-class graph, and
+  `BenchmarkSemanticDigestWideFanOut` tracks the wide-fan-out case.
+
 ## v0.2.5 — 2026-08-28
 
 Performance fix: the insert path still paid the O(poset size) scan that

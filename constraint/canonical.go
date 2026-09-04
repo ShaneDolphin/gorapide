@@ -187,6 +187,22 @@ func (c *Constraint) EvaluateCanonicalWithState(
 	poset pattern.PosetReader,
 	stateWitnesses []ClauseStateWitnesses,
 ) (CanonicalConstraintReport, error) {
+	return c.evaluateCanonicalWithPosetDigest(poset, "", stateWitnesses)
+}
+
+// evaluateCanonicalWithPosetDigest is EvaluateCanonicalWithState for a caller
+// that already holds the poset's semantic digest (a constraint set evaluating
+// many members against one poset). An empty posetDigest is computed here. The
+// digest is a pure function of the poset, so reusing it cannot change the
+// report; it only avoids re-encoding the whole poset once per constraint.
+// Likewise, when the constraint declares no filter and no alphabet, the
+// evaluation view is the poset itself and EvaluationPosetDigest equals
+// PosetDigest by construction, so it is not recomputed.
+func (c *Constraint) evaluateCanonicalWithPosetDigest(
+	poset pattern.PosetReader,
+	posetDigest string,
+	stateWitnesses []ClauseStateWitnesses,
+) (CanonicalConstraintReport, error) {
 	constraintDigest, err := c.DeterministicDigest()
 	if err != nil {
 		return CanonicalConstraintReport{}, err
@@ -194,17 +210,22 @@ func (c *Constraint) EvaluateCanonicalWithState(
 	if poset == nil {
 		return CanonicalConstraintReport{}, fmt.Errorf("%w: poset is nil", ErrConstraintEvaluation)
 	}
-	posetDigest, err := semanticPosetDigest(poset)
-	if err != nil {
-		return CanonicalConstraintReport{}, err
+	if posetDigest == "" {
+		posetDigest, err = semanticPosetDigest(poset)
+		if err != nil {
+			return CanonicalConstraintReport{}, err
+		}
 	}
 	view, err := c.evaluationView(poset)
 	if err != nil {
 		return CanonicalConstraintReport{}, err
 	}
-	evaluationDigest, err := semanticPosetDigest(view)
-	if err != nil {
-		return CanonicalConstraintReport{}, err
+	evaluationDigest := posetDigest
+	if c.hasEvaluationFilter() {
+		evaluationDigest, err = semanticPosetDigest(view)
+		if err != nil {
+			return CanonicalConstraintReport{}, err
+		}
 	}
 	violations, err := c.checkDeterministicView(view, stateWitnesses)
 	if err != nil {

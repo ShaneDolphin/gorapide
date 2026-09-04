@@ -2,6 +2,7 @@ package gorapide
 
 import (
 	"bytes"
+	"container/heap"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -665,20 +666,23 @@ func (p *Poset) causalDepthsLocked() (map[EventID]uint64, error) {
 		inDegree[representative] = len(p.causalClassPredecessorsLocked(representative))
 	}
 
-	ready := make([]EventID, 0)
+	// The ready set is a min-heap keyed by EventID: each step visits the
+	// lexicographically least ready representative, exactly the order the
+	// previous sort-after-every-pop implementation produced, at O(log n) per
+	// operation instead of O(n log n). Longest-path depths are independent of
+	// the visiting order in any case; the heap only preserves the traversal.
+	ready := &eventIDMinHeap{}
 	for _, id := range representatives {
-		degree := inDegree[id]
-		if degree == 0 {
-			ready = append(ready, id)
+		if inDegree[id] == 0 {
+			*ready = append(*ready, id)
 		}
 	}
-	sort.Slice(ready, func(i, j int) bool { return ready[i] < ready[j] })
+	heap.Init(ready)
 
 	classDepths := make(map[EventID]uint64, len(representatives))
 	visited := 0
-	for len(ready) > 0 {
-		current := ready[0]
-		ready = ready[1:]
+	for ready.Len() > 0 {
+		current := heap.Pop(ready).(EventID)
 		visited++
 
 		depth := uint64(1)
@@ -692,10 +696,9 @@ func (p *Poset) causalDepthsLocked() (map[EventID]uint64, error) {
 		for _, successor := range p.causalClassSuccessorsLocked(current) {
 			inDegree[successor]--
 			if inDegree[successor] == 0 {
-				ready = append(ready, successor)
+				heap.Push(ready, successor)
 			}
 		}
-		sort.Slice(ready, func(i, j int) bool { return ready[i] < ready[j] })
 	}
 	if visited != len(representatives) {
 		return nil, fmt.Errorf("gorapide.Poset.Canonical: causal graph contains a cycle")
@@ -705,4 +708,18 @@ func (p *Poset) causalDepthsLocked() (map[EventID]uint64, error) {
 		depths[id] = classDepths[p.causalRepresentativeLocked(id)]
 	}
 	return depths, nil
+}
+
+// eventIDMinHeap orders event IDs lexicographically for causalDepthsLocked.
+type eventIDMinHeap []EventID
+
+func (h eventIDMinHeap) Len() int           { return len(h) }
+func (h eventIDMinHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h eventIDMinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *eventIDMinHeap) Push(x any)        { *h = append(*h, x.(EventID)) }
+func (h *eventIDMinHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
 }

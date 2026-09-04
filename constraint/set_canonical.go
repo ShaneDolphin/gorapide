@@ -180,7 +180,7 @@ func (set *ConstraintSet) EvaluateCanonicalWithState(
 		}
 		var report CanonicalConstraintReport
 		if current, ok := member.checker.(*Constraint); ok {
-			report, err = current.EvaluateCanonicalWithState(poset, memberWitnesses)
+			report, err = current.evaluateCanonicalWithPosetDigest(poset, posetDigest, memberWitnesses)
 		} else {
 			if len(memberWitnesses) != 0 {
 				return CanonicalConstraintSetReport{}, fmt.Errorf(

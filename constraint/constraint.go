@@ -152,8 +152,14 @@ func (c *Constraint) CheckDeterministicWithState(
 	return c.checkDeterministicView(view, stateWitnesses)
 }
 
+// hasEvaluationFilter reports whether evaluationView projects the poset. When
+// false, evaluationView returns its argument unchanged.
+func (c *Constraint) hasEvaluationFilter() bool {
+	return c.Filter != nil || len(c.Alphabet) != 0
+}
+
 func (c *Constraint) evaluationView(poset pattern.PosetReader) (pattern.PosetReader, error) {
-	if c.Filter == nil && len(c.Alphabet) == 0 {
+	if !c.hasEvaluationFilter() {
 		return poset, nil
 	}
 	filters := c.Alphabet
